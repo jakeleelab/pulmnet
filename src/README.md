@@ -1,6 +1,6 @@
 ## Requirements
 
-Analyses were performed in **R 4.3.3** on macOS. The main R packages required to reproduce the analyses are listed below.
+Analyses were performed in **R 4.3.3**. The main R packages required to reproduce the analyses are listed below.
 
 ### Required R packages
 
