@@ -5,3 +5,9 @@ Associated data is deposited here: https://genie.cbioportal.org/study?id=6a04db0
 <img width="1302" height="501" alt="image" src="https://github.com/user-attachments/assets/72c564ae-23f0-409b-b2a3-b8a12685095e" />
 
 Citation: to be updated
+
+
+### Software and Tools
+
+For the source code and tutorial for `ctx_finder` see [ctx_finder](src/ctx_finder).
+
