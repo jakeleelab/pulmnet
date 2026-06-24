@@ -68,7 +68,9 @@ BiocManager::install(c(
   "ComplexHeatmap"
 ))
 
-## Session information
+
+
+**### Session information**
 
 The figure scripts were run using the following R environment:
 
