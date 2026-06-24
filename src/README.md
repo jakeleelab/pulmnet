@@ -70,7 +70,7 @@ BiocManager::install(c(
 
 
 
-**### Session information**
+### Session Information
 
 The figure scripts were run using the following R environment:
 
