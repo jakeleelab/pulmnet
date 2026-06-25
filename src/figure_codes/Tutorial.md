@@ -372,3 +372,177 @@ ARID1A-only
 Others
 ```
 
+### Figure 5
+
+This script generates recurrence-free survival analyses and stage IV overall survival analyses stratified by Ki-67 group and genomic risk group.
+
+Main outputs include:
+
+```text
+km.rfs.surgicalki67.pdf
+km.rfs.genomicrisk.pdf
+km.rfs.combinedminimalrisk.pdf
+km.os.maxki67.stageIVonly.pdf
+km.os.genomicrisk.stageIVonly.pdf
+```
+
+Main input files and objects include:
+
+```text
+rfs.csv
+pulmnet.annotated.csv
+```
+
+The recurrence-free survival analyses use `rfs.csv`, which is loaded in the script as:
+
+```r
+ra <- read.csv("rfs.csv")
+```
+
+The stage IV overall survival analyses use the annotated pulmonary carcinoid data frame `ca`. If running from a clean R session, load `ca` before running the stage IV survival sections:
+
+```r
+ca <- read.csv("pulmnet.annotated.csv")
+```
+
+Briefly, `Figure5.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+```
+
+2. Loads the recurrence-free survival dataset:
+
+```r
+ra <- read.csv("rfs.csv")
+```
+
+3. Generates a recurrence-free survival Kaplan-Meier plot by surgical Ki-67 group:
+
+```text
+km.rfs.surgicalki67.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ surg_ki67_group
+```
+
+4. Calculates and displays number-at-risk tables below the Kaplan-Meier plot.
+
+5. Performs pairwise log-rank tests comparing surgical Ki-67 groups, including:
+
+```text
+01_below3 vs 02_3to10
+02_3to10 vs 03_above10
+```
+
+6. Generates a recurrence-free survival Kaplan-Meier plot by genomic risk group:
+
+```text
+km.rfs.genomicrisk.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ risk_group
+```
+
+7. Performs pairwise log-rank tests comparing genomic risk groups, including:
+
+```text
+01_low_risk vs 02_intermediate_risk
+02_intermediate_risk vs 03_high_risk
+```
+
+8. Generates a recurrence-free survival Kaplan-Meier plot by combined/minimal risk group:
+
+```text
+km.rfs.combinedminimalrisk.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ ult_group
+```
+
+9. Generates a stage IV-only overall survival Kaplan-Meier plot by Ki-67 group:
+
+```text
+km.os.maxki67.stageIVonly.pdf
+```
+
+This analysis uses the subset:
+
+```r
+ca[ca$stage_simple == "IV" & ca$ki67_group != "04_unknown", ]
+```
+
+and fits:
+
+```r
+Surv(os_months2, os_event2) ~ ki67_group
+```
+
+10. Performs pairwise log-rank tests comparing Ki-67 groups among stage IV cases, including:
+
+```text
+01_below3 vs 02_3to10
+02_3to10 vs 03_above10
+```
+
+11. Generates a stage IV-only overall survival Kaplan-Meier plot by genomic risk group:
+
+```text
+km.os.genomicrisk.stageIVonly.pdf
+```
+
+This analysis uses the subset:
+
+```r
+ca[ca$stage_simple == "IV" & ca$ki67_group != "04_unknown", ]
+```
+
+and fits:
+
+```r
+Surv(os_months2, os_event2) ~ risk_group
+```
+
+12. Performs pairwise log-rank tests comparing genomic risk groups among stage IV cases, including:
+
+```text
+01_low_risk vs 02_intermediate_risk
+02_intermediate_risk vs 03_high_risk
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+The Ki-67 group labels used in this script include:
+
+```text
+01_below3
+02_3to10
+03_above10
+04_unknown
+```
+
+The genomic risk group labels used in this script include:
+
+```text
+01_low_risk
+02_intermediate_risk
+03_high_risk
+```
+
+The combined/minimal risk grouping is stored in:
+
+```text
+ult_group
+```
