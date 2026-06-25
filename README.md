@@ -6,8 +6,10 @@ Associated data is deposited here: https://genie.cbioportal.org/study?id=6a04db0
 
 Citation: to be updated
 
+### Figure-related Codes
+For the source code and tutorial for figure-related codes, see [figure_codes](src/figure_codes).
 
 ### Software and Tools
-
+For the source code and tutorial for `ctx_heuristic` see [ctx_heuristic](src/ctx_heuristic).
 For the source code and tutorial for `ctx_finder` see [ctx_finder](src/ctx_finder).
 
