@@ -189,6 +189,186 @@ cnlr = copy-number log-ratio
 
 Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, the Figure 3 chromothripsis copy-number panels are not fully reproducible from the public repository alone.
 
+### Figure 4
 
+This script generates clinical and genomic subgroup association analyses, including survival, stage distribution, Ki-67 index, fraction of nondiploid genome, integrated IHC/genomic subgroup visualization, and multivariable Cox proportional hazards modeling.
 
+Main outputs include:
+
+```text
+km.os.gen_group.pdf
+bubble.stage.gen_group.pdf
+boxplot.ki67.gen_group.pdf
+boxplot.fga.gen_group.pdf
+oncoprint.ihc.pdf
+coxph.os.ggforest.pdf
+```
+
+Main input files and objects include:
+
+```text
+pulmnet.annotated.csv
+comprehensive.ihc.csv
+multivariate.csv
+```
+
+The object `ca` is used as the annotated pulmonary carcinoid data frame. If running from a clean R session, load it before running the script:
+
+```r
+ca <- read.csv("pulmnet.annotated.csv")
+```
+
+The script also uses `groups`, `time_points`, and `n_risk_mat` for the number-at-risk table under the Kaplan-Meier plot.
+
+Briefly, `Figure4.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+library(ComplexHeatmap)
+library(plotrix)
+```
+
+2. Generates an overall survival Kaplan-Meier plot by genomic subgroup:
+
+```text
+km.os.gen_group.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(os_months2, os_event2) ~ gen_group
+```
+
+from the annotated pulmonary carcinoid data frame `ca`.
+
+3. Generates a bubble plot showing stage distribution across genomic subgroups:
+
+```text
+bubble.stage.gen_group.pdf
+```
+
+This plot summarizes the distribution of `stage_simple` by `gen_group`.
+
+4. Generates a boxplot comparing maximum Ki-67 index across genomic subgroups:
+
+```text
+boxplot.ki67.gen_group.pdf
+```
+
+This analysis uses:
+
+```text
+max_ki67
+gen_group
+```
+
+5. Performs pairwise t-tests comparing Ki-67 index between selected genomic subgroups.
+
+6. Generates a boxplot comparing fraction of nondiploid genome across genomic subgroups:
+
+```text
+boxplot.fga.gen_group.pdf
+```
+
+This analysis uses:
+
+```text
+facets_fga
+gen_group
+```
+
+7. Performs pairwise t-tests comparing fraction of nondiploid genome between selected genomic subgroups.
+
+8. Loads the comprehensive IHC annotation table:
+
+```r
+ndf <- read.csv("comprehensive.ihc.csv")
+```
+
+9. Generates an integrated IHC/genomic subgroup oncoprint:
+
+```text
+oncoprint.ihc.pdf
+```
+
+This plot includes annotations such as:
+
+```text
+gen_group
+sex
+histology
+bin_otp
+bin_ascl1
+bin_ttf1
+bin_hnf4a
+bin_dll3
+bin_sez6
+ihc_group
+age_dx
+```
+
+10. Loads the multivariable survival analysis table:
+
+```r
+sdf <- read.csv("multivariate.csv")
+```
+
+11. Fits a multivariable Cox proportional hazards model for overall survival:
+
+```r
+cox <- coxph(
+  Surv(os_months2, os_event2) ~
+    dic_age +
+    sex +
+    stage_simple +
+    tri_path +
+    dic_ki67 +
+    dic_fga +
+    dic_wgd +
+    gen_group,
+  data = sdf
+)
+```
+
+12. Generates a forest plot for the multivariable Cox model:
+
+```text
+coxph.os.ggforest.pdf
+```
+
+This step uses `ggforest()`, which is provided by the `survminer` package. If needed, load `survminer` before running this section:
+
+```r
+library(survminer)
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+The genomic subgroup labels used in this figure include:
+
+```text
+0_mut_neg
+1_chromothripsis
+2_kras_nf1
+3_eif1ax
+4_men1
+5_arid1a_only
+6_others
+```
+
+These are displayed in the plots as:
+
+```text
+Mutation negative
+Chromothripsis
+KRAS/NF1
+EIF1AX
+MEN1
+ARID1A-only
+Others
+```
 
