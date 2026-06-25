@@ -47,10 +47,6 @@ cncf.csv
 chromothripsis.details.csv
 C11_hisens.Rdata
 C26_hisens.Rdata
-hg19
-cytoband
-genedf
-facets
 ```
 
 The script generates genome-wide and chromosome-level copy-number plots for representative chromothripsis-positive cases. It uses FACETS-derived copy-number output to visualize raw copy-number estimates and segmented total/minor copy-number calls.
@@ -83,4 +79,116 @@ p    = tumor ploidy estimate
 cnlr = copy-number log-ratio
 ```
 
-Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, some Figure 2 copy-number panels may not be fully reproducible from the public repository alone.
+Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, some Figure 2 copy-number panels are not fully reproducible from the public repository alone.
+
+### Figure 3
+
+This script generates cross-site neuroendocrine tumor oncoprints and representative chromothripsis copy-number plots, including:
+
+```text
+oncoprint.pancreas.net.pdf
+oncoprint.lung.net.pdf
+oncoprint.gi.net.pdf
+P01.chr11.chromothripsis.pdf
+P01.chr12.chromothripsis.pdf
+S01.chr11.chromothripsis.pdf
+S01.chr12.chromothripsis.pdf
+```
+
+Main input files and objects include:
+
+```text
+pancreas.net.csv
+lung.net.csv
+gi.net.csv
+cncf.csv
+P01_hisens.Rdata
+S01_hisens.Rdata
+```
+
+The script generates oncoprints for neuroendocrine tumors from major anatomical sites and visualizes chromothripsis-associated copy-number alterations in representative pancreatic and gastrointestinal neuroendocrine tumor cases.
+
+Briefly, `Figure3.R` performs the following steps:
+
+1. Defines a neuroendocrine tumor gene set used for cross-site oncoprint visualization.
+
+```r
+geneofi <- c(
+  "EIF1AX", "ARID1A", "MEN1", "DAXX", "ATRX", "ATM", "SETD2",
+  "KRAS", "PTEN", "TSC2", "CDKN1B", "CDKN2A", "CDKN2B",
+  "CCND1", "MDM2", "CDK4", "MDM4", "MYCL", "RB1", "TP53"
+)
+```
+
+2. Loads processed genomic alteration tables for neuroendocrine tumors from different anatomical sites:
+
+```text
+pancreas.net.csv
+lung.net.csv
+gi.net.csv
+```
+
+3. Generates site-specific oncoprints using `ComplexHeatmap`.
+
+4. Harmonizes selected mutation annotations before plotting, for example:
+
+```text
+nonframeshift_deletion -> inframe
+nonsynonymous_SNV      -> missense
+```
+
+5. Loads FACETS-derived copy-number data for representative chromothripsis-positive cases:
+
+```text
+P01_hisens.Rdata
+S01_hisens.Rdata
+```
+
+6. Converts copy-number log-ratio values into estimated total copy number using sample-specific purity and ploidy values.
+
+7. Generates chromosome-level chromothripsis plots for pancreatic case `P01`, including:
+
+```text
+P01.chr11.chromothripsis.pdf
+P01.chr12.chromothripsis.pdf
+```
+
+8. Generates chromosome-level chromothripsis plots for small intestinal/gastrointestinal case `S01`, including:
+
+```text
+S01.chr11.chromothripsis.pdf
+S01.chr12.chromothripsis.pdf
+```
+
+9. Overlays segmented total copy number and minor copy number from `cncf.csv`.
+
+10. Marks genes of interest on copy-number plots, including:
+
+```text
+CCND1
+CDK4
+MDM2
+PAK1
+```
+
+11. Saves all outputs as PDF files in the working directory.
+
+The copy-number transformation used in this script is:
+
+```r
+tcn_estimate <- ((f * p + (1 - f) * 2) * 2^cnlr - (1 - f) * 2) / f
+```
+
+where:
+
+```text
+f    = tumor purity estimate
+p    = tumor ploidy estimate
+cnlr = copy-number log-ratio
+```
+
+Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, the Figure 3 chromothripsis copy-number panels are not fully reproducible from the public repository alone.
+
+
+
+
