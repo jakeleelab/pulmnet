@@ -9,3 +9,709 @@ Where possible, de-identified summary-level or derived data tables are provided.
 De-identified patient-level basic genomic data for all 205 patients have already been released through the AACR Project GENIE. A direct link to these data is provided on the main repository page.
 
 Please note that some figure panels, particularly copy-number plots requiring sample-level FACETS output, may not be fully reproducible from the public repository alone.
+
+## Step-by-step tutorial and annotations for figure-related code
+
+### Figure 1
+
+This script generates the pulmonary carcinoid genomic landscape figures, including:
+
+```text
+oncoprint.pulmnet.pdf
+oncoprint.TSGs.pdf
+mutual.exclusivity.heatmap.pdf
+```
+
+Main input files include:
+
+```text
+pulmnet.csv
+segmental.cn.csv
+pulmnet.annotated.csv
+```
+
+The script generates oncoprints using `ComplexHeatmap` and performs mutual exclusivity/co-occurrence analysis using `Rediscover`.
+
+Briefly, `Figure1.R` performs the following steps:
+
+1. Loads genomic and mutational data from `pulmnet.csv`.
+2. Defines the core pulmonary carcinoid gene set used for plotting.
+3. Generates the main genomic landscape oncoprint.
+4. Generates a tumor suppressor gene-focused oncoprint incorporating LOH information from `segmental.cn.csv`.
+5. Loads annotated patient-level data from `pulmnet.annotated.csv`.
+6. Performs mutual exclusivity and co-occurrence analysis across selected genomic features.
+7. Saves all outputs as PDF files in the working directory.
+
+### Figure 2
+
+This script generates chromothripsis and copy-number visualization panels, including:
+
+```text
+C11.genome.chromothripsis.pdf
+C11.chr2.chromothripsis.pdf
+C11.chr11.chromothripsis.pdf
+chromothripsis.cn.heatmap.pdf
+C26.chr1.chromothripsis.pdf
+```
+
+Main input files and objects include:
+
+```text
+cncf.csv
+chromothripsis.details.csv
+C11_hisens.Rdata
+C26_hisens.Rdata
+```
+
+The script generates genome-wide and chromosome-level copy-number plots for representative chromothripsis-positive cases. It uses FACETS-derived copy-number output to visualize raw copy-number estimates and segmented total/minor copy-number calls.
+
+Briefly, `Figure2.R` performs the following steps:
+
+1. Loads genome annotation objects, including chromosome size/position information from `hg19`.
+2. Generates a genome-wide copy-number plot for case `C11`.
+3. Loads FACETS-derived data from `C11_hisens.Rdata`.
+4. Converts copy-number log-ratio values into estimated total copy number using sample-specific purity and ploidy values.
+5. Overlays segmented total copy number and minor copy number from `cncf.csv`.
+6. Generates chromosome-level inset plots for chromosomes 2 and 11 in case `C11`.
+7. Loads chromothripsis annotation data from `chromothripsis.details.csv`.
+8. Generates a copy-number heatmap across chromothripsis-positive tumors.
+9. Marks chromosomes affected by chromothripsis and chromosomes with focal amplification.
+10. Generates a chromosome 1 chromothripsis plot for case `C26`, highlighting genes of interest such as `MYCL` and `ARID1A`.
+11. Saves all outputs as PDF files in the working directory.
+
+The copy-number transformation used in this script is:
+
+```r
+tcn_estimate <- ((f * p + (1 - f) * 2) * 2^cnlr - (1 - f) * 2) / f
+```
+
+where:
+
+```text
+f    = tumor purity estimate
+p    = tumor ploidy estimate
+cnlr = copy-number log-ratio
+```
+
+Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, some Figure 2 copy-number panels are not fully reproducible from the public repository alone.
+
+### Figure 3
+
+This script generates cross-site neuroendocrine tumor oncoprints and representative chromothripsis copy-number plots, including:
+
+```text
+oncoprint.pancreas.net.pdf
+oncoprint.lung.net.pdf
+oncoprint.gi.net.pdf
+P01.chr11.chromothripsis.pdf
+P01.chr12.chromothripsis.pdf
+S01.chr11.chromothripsis.pdf
+S01.chr12.chromothripsis.pdf
+```
+
+Main input files and objects include:
+
+```text
+pancreas.net.csv
+lung.net.csv
+gi.net.csv
+cncf.csv
+P01_hisens.Rdata
+S01_hisens.Rdata
+```
+
+The script generates oncoprints for neuroendocrine tumors from major anatomical sites and visualizes chromothripsis-associated copy-number alterations in representative pancreatic and gastrointestinal neuroendocrine tumor cases.
+
+Briefly, `Figure3.R` performs the following steps:
+
+1. Defines a neuroendocrine tumor gene set used for cross-site oncoprint visualization.
+
+```r
+geneofi <- c(
+  "EIF1AX", "ARID1A", "MEN1", "DAXX", "ATRX", "ATM", "SETD2",
+  "KRAS", "PTEN", "TSC2", "CDKN1B", "CDKN2A", "CDKN2B",
+  "CCND1", "MDM2", "CDK4", "MDM4", "MYCL", "RB1", "TP53"
+)
+```
+
+2. Loads processed genomic alteration tables for neuroendocrine tumors from different anatomical sites:
+
+```text
+pancreas.net.csv
+lung.net.csv
+gi.net.csv
+```
+
+3. Generates site-specific oncoprints using `ComplexHeatmap`.
+
+4. Harmonizes selected mutation annotations before plotting, for example:
+
+```text
+nonframeshift_deletion -> inframe
+nonsynonymous_SNV      -> missense
+```
+
+5. Loads FACETS-derived copy-number data for representative chromothripsis-positive cases:
+
+```text
+P01_hisens.Rdata
+S01_hisens.Rdata
+```
+
+6. Converts copy-number log-ratio values into estimated total copy number using sample-specific purity and ploidy values.
+
+7. Generates chromosome-level chromothripsis plots for pancreatic case `P01`, including:
+
+```text
+P01.chr11.chromothripsis.pdf
+P01.chr12.chromothripsis.pdf
+```
+
+8. Generates chromosome-level chromothripsis plots for small intestinal/gastrointestinal case `S01`, including:
+
+```text
+S01.chr11.chromothripsis.pdf
+S01.chr12.chromothripsis.pdf
+```
+
+9. Overlays segmented total copy number and minor copy number from `cncf.csv`.
+
+10. Marks genes of interest on copy-number plots, including:
+
+```text
+CCND1
+CDK4
+MDM2
+PAK1
+```
+
+11. Saves all outputs as PDF files in the working directory.
+
+The copy-number transformation used in this script is:
+
+```r
+tcn_estimate <- ((f * p + (1 - f) * 2) * 2^cnlr - (1 - f) * 2) / f
+```
+
+where:
+
+```text
+f    = tumor purity estimate
+p    = tumor ploidy estimate
+cnlr = copy-number log-ratio
+```
+
+Please note that the `*_hisens.Rdata` files and some sample-level FACETS output files are not included in the initial public repository because they may contain germline SNP-informed information. Therefore, the Figure 3 chromothripsis copy-number panels are not fully reproducible from the public repository alone.
+
+### Figure 4
+
+This script generates clinical and genomic subgroup association analyses, including survival, stage distribution, Ki-67 index, fraction of nondiploid genome, integrated IHC/genomic subgroup visualization, and multivariable Cox proportional hazards modeling.
+
+Main outputs include:
+
+```text
+km.os.gen_group.pdf
+bubble.stage.gen_group.pdf
+boxplot.ki67.gen_group.pdf
+boxplot.fga.gen_group.pdf
+oncoprint.ihc.pdf
+coxph.os.ggforest.pdf
+```
+
+Main input files and objects include:
+
+```text
+pulmnet.annotated.csv
+comprehensive.ihc.csv
+multivariate.csv
+```
+
+The object `ca` is used as the annotated pulmonary carcinoid data frame. If running from a clean R session, load it before running the script:
+
+```r
+ca <- read.csv("pulmnet.annotated.csv")
+```
+
+The script also uses `groups`, `time_points`, and `n_risk_mat` for the number-at-risk table under the Kaplan-Meier plot.
+
+Briefly, `Figure4.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+library(ComplexHeatmap)
+library(plotrix)
+```
+
+2. Generates an overall survival Kaplan-Meier plot by genomic subgroup:
+
+```text
+km.os.gen_group.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(os_months2, os_event2) ~ gen_group
+```
+
+from the annotated pulmonary carcinoid data frame `ca`.
+
+3. Generates a bubble plot showing stage distribution across genomic subgroups:
+
+```text
+bubble.stage.gen_group.pdf
+```
+
+This plot summarizes the distribution of `stage_simple` by `gen_group`.
+
+4. Generates a boxplot comparing maximum Ki-67 index across genomic subgroups:
+
+```text
+boxplot.ki67.gen_group.pdf
+```
+
+This analysis uses:
+
+```text
+max_ki67
+gen_group
+```
+
+5. Performs pairwise t-tests comparing Ki-67 index between selected genomic subgroups.
+
+6. Generates a boxplot comparing fraction of nondiploid genome across genomic subgroups:
+
+```text
+boxplot.fga.gen_group.pdf
+```
+
+This analysis uses:
+
+```text
+facets_fga
+gen_group
+```
+
+7. Performs pairwise t-tests comparing fraction of nondiploid genome between selected genomic subgroups.
+
+8. Loads the comprehensive IHC annotation table:
+
+```r
+ndf <- read.csv("comprehensive.ihc.csv")
+```
+
+9. Generates an integrated IHC/genomic subgroup oncoprint:
+
+```text
+oncoprint.ihc.pdf
+```
+
+This plot includes annotations such as:
+
+```text
+gen_group
+sex
+histology
+bin_otp
+bin_ascl1
+bin_ttf1
+bin_hnf4a
+bin_dll3
+bin_sez6
+ihc_group
+age_dx
+```
+
+10. Loads the multivariable survival analysis table:
+
+```r
+sdf <- read.csv("multivariate.csv")
+```
+
+11. Fits a multivariable Cox proportional hazards model for overall survival:
+
+```r
+cox <- coxph(
+  Surv(os_months2, os_event2) ~
+    dic_age +
+    sex +
+    stage_simple +
+    tri_path +
+    dic_ki67 +
+    dic_fga +
+    dic_wgd +
+    gen_group,
+  data = sdf
+)
+```
+
+12. Generates a forest plot for the multivariable Cox model:
+
+```text
+coxph.os.ggforest.pdf
+```
+
+This step uses `ggforest()`, which is provided by the `survminer` package. If needed, load `survminer` before running this section:
+
+```r
+library(survminer)
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+The genomic subgroup labels used in this figure include:
+
+```text
+0_mut_neg
+1_chromothripsis
+2_kras_nf1
+3_eif1ax
+4_men1
+5_arid1a_only
+6_others
+```
+
+These are displayed in the plots as:
+
+```text
+Mutation negative
+Chromothripsis
+KRAS/NF1
+EIF1AX
+MEN1
+ARID1A-only
+Others
+```
+
+### Figure 5
+
+This script generates recurrence-free survival analyses and stage IV overall survival analyses stratified by Ki-67 group and genomic risk group.
+
+Main outputs include:
+
+```text
+km.rfs.surgicalki67.pdf
+km.rfs.genomicrisk.pdf
+km.rfs.combinedminimalrisk.pdf
+km.os.maxki67.stageIVonly.pdf
+km.os.genomicrisk.stageIVonly.pdf
+```
+
+Main input files and objects include:
+
+```text
+rfs.csv
+pulmnet.annotated.csv
+```
+
+The recurrence-free survival analyses use `rfs.csv`, which is loaded in the script as:
+
+```r
+ra <- read.csv("rfs.csv")
+```
+
+The stage IV overall survival analyses use the annotated pulmonary carcinoid data frame `ca`. If running from a clean R session, load `ca` before running the stage IV survival sections:
+
+```r
+ca <- read.csv("pulmnet.annotated.csv")
+```
+
+Briefly, `Figure5.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+```
+
+2. Loads the recurrence-free survival dataset:
+
+```r
+ra <- read.csv("rfs.csv")
+```
+
+3. Generates a recurrence-free survival Kaplan-Meier plot by surgical Ki-67 group:
+
+```text
+km.rfs.surgicalki67.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ surg_ki67_group
+```
+
+4. Calculates and displays number-at-risk tables below the Kaplan-Meier plot.
+
+5. Performs pairwise log-rank tests comparing surgical Ki-67 groups, including:
+
+```text
+01_below3 vs 02_3to10
+02_3to10 vs 03_above10
+```
+
+6. Generates a recurrence-free survival Kaplan-Meier plot by genomic risk group:
+
+```text
+km.rfs.genomicrisk.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ risk_group
+```
+
+7. Performs pairwise log-rank tests comparing genomic risk groups, including:
+
+```text
+01_low_risk vs 02_intermediate_risk
+02_intermediate_risk vs 03_high_risk
+```
+
+8. Generates a recurrence-free survival Kaplan-Meier plot by combined/minimal risk group:
+
+```text
+km.rfs.combinedminimalrisk.pdf
+```
+
+This analysis uses:
+
+```r
+Surv(rfs_month, recurrence) ~ ult_group
+```
+
+9. Generates a stage IV-only overall survival Kaplan-Meier plot by Ki-67 group:
+
+```text
+km.os.maxki67.stageIVonly.pdf
+```
+
+This analysis uses the subset:
+
+```r
+ca[ca$stage_simple == "IV" & ca$ki67_group != "04_unknown", ]
+```
+
+and fits:
+
+```r
+Surv(os_months2, os_event2) ~ ki67_group
+```
+
+10. Performs pairwise log-rank tests comparing Ki-67 groups among stage IV cases, including:
+
+```text
+01_below3 vs 02_3to10
+02_3to10 vs 03_above10
+```
+
+11. Generates a stage IV-only overall survival Kaplan-Meier plot by genomic risk group:
+
+```text
+km.os.genomicrisk.stageIVonly.pdf
+```
+
+This analysis uses the subset:
+
+```r
+ca[ca$stage_simple == "IV" & ca$ki67_group != "04_unknown", ]
+```
+
+and fits:
+
+```r
+Surv(os_months2, os_event2) ~ risk_group
+```
+
+12. Performs pairwise log-rank tests comparing genomic risk groups among stage IV cases, including:
+
+```text
+01_low_risk vs 02_intermediate_risk
+02_intermediate_risk vs 03_high_risk
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+The Ki-67 group labels used in this script include:
+
+```text
+01_below3
+02_3to10
+03_above10
+04_unknown
+```
+
+The genomic risk group labels used in this script include:
+
+```text
+01_low_risk
+02_intermediate_risk
+03_high_risk
+```
+
+The combined/minimal risk grouping is stored in:
+
+```text
+ult_group
+```
+
+### Figure 6
+
+This script generates analyses related to chromothripsis-associated high-grade transformation and clinical treatment course.
+
+Main outputs include:
+
+```text
+boxplot.ki67.grade.pdf
+km.os.grade.pdf
+swimmer.pdf
+```
+
+Main input files and objects include:
+
+```text
+ctx.net.asclc.csv
+txhistory.csv
+```
+
+The script loads the chromothripsis-associated NET/SCLC comparison dataset as:
+
+```r
+ptdf <- read.csv("ctx.net.asclc.csv")
+```
+
+The treatment-history table is loaded as:
+
+```r
+hx <- read.csv("txhistory.csv")
+```
+
+Briefly, `Figure6.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+```
+
+2. Loads the dataset comparing chromothripsis-harboring low-grade-only tumors and tumors with a high-grade component:
+
+```r
+ptdf <- read.csv("ctx.net.asclc.csv")
+```
+
+3. Generates a boxplot comparing maximum Ki-67 index between the two groups:
+
+```text
+boxplot.ki67.grade.pdf
+```
+
+This analysis uses:
+
+```r
+ptdf$max_ki67 ~ ptdf$group
+```
+
+and reports the two-group t-test p-value in the plot title.
+
+4. Defines the comparison groups as:
+
+```text
+01_carcinoid
+02_asclc
+```
+
+These are displayed in the plot as:
+
+```text
+Low-grade only
+With high-grade part
+```
+
+5. Fits an overall survival Kaplan-Meier curve comparing the two groups:
+
+```r
+survfit(Surv(os_months2, os_event2) ~ group, data = ptdf)
+```
+
+6. Generates an overall survival Kaplan-Meier plot:
+
+```text
+km.os.grade.pdf
+```
+
+The plot includes:
+
+- survival curves by group
+- log-rank test p-value from `survdiff()`
+- censoring marks
+- number-at-risk table at 0, 50, 100, and 150 months
+
+7. Loads the treatment-history table:
+
+```r
+hx <- read.csv("txhistory.csv")
+```
+
+8. Generates a swimmer plot showing patient-level clinical course:
+
+```text
+swimmer.pdf
+```
+
+The swimmer plot displays:
+
+- overall survival time
+- vital status/censoring
+- initial disease status
+- recurrence timing, when available
+- non-metastatic interval
+- metastatic/recurrent disease interval
+- treatment exposure intervals
+- octreotide exposure, when available
+
+9. Uses the following columns from `ctx.net.asclc.csv` for the swimmer plot:
+
+```text
+study_id
+group
+max_ki67
+os_months2
+os_event2
+initial_ds
+rec_months
+infofield
+day1
+```
+
+10. Uses the following columns from `txhistory.csv` for treatment intervals:
+
+```text
+infofield
+info
+start_date
+end_date
+txsum
+```
+
+11. Uses `txcol` to assign colors to treatment categories in the swimmer plot.
+
+12. Uses `sa` to add octreotide exposure intervals, with expected columns including:
+
+```text
+infofield
+SA_eligible
+SA_start
+SA_end
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+Please note that `ctx.net.asclc.csv` and `txhistory.csv` contain patient-level survival, recurrence, and treatment-history information, thus the public release of these files are limited. 
