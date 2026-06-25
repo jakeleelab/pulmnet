@@ -546,3 +546,158 @@ The combined/minimal risk grouping is stored in:
 ```text
 ult_group
 ```
+
+### Figure 6
+
+This script generates analyses related to chromothripsis-associated high-grade transformation and clinical treatment course.
+
+Main outputs include:
+
+```text
+boxplot.ki67.grade.pdf
+km.os.grade.pdf
+swimmer.pdf
+```
+
+Main input files and objects include:
+
+```text
+ctx.net.asclc.csv
+txhistory.csv
+```
+
+The script loads the chromothripsis-associated NET/SCLC comparison dataset as:
+
+```r
+ptdf <- read.csv("ctx.net.asclc.csv")
+```
+
+The treatment-history table is loaded as:
+
+```r
+hx <- read.csv("txhistory.csv")
+```
+
+Briefly, `Figure6.R` performs the following steps:
+
+1. Loads required R packages:
+
+```r
+library(stringr)
+library(survival)
+```
+
+2. Loads the dataset comparing chromothripsis-harboring low-grade-only tumors and tumors with a high-grade component:
+
+```r
+ptdf <- read.csv("ctx.net.asclc.csv")
+```
+
+3. Generates a boxplot comparing maximum Ki-67 index between the two groups:
+
+```text
+boxplot.ki67.grade.pdf
+```
+
+This analysis uses:
+
+```r
+ptdf$max_ki67 ~ ptdf$group
+```
+
+and reports the two-group t-test p-value in the plot title.
+
+4. Defines the comparison groups as:
+
+```text
+01_carcinoid
+02_asclc
+```
+
+These are displayed in the plot as:
+
+```text
+Low-grade only
+With high-grade part
+```
+
+5. Fits an overall survival Kaplan-Meier curve comparing the two groups:
+
+```r
+survfit(Surv(os_months2, os_event2) ~ group, data = ptdf)
+```
+
+6. Generates an overall survival Kaplan-Meier plot:
+
+```text
+km.os.grade.pdf
+```
+
+The plot includes:
+
+- survival curves by group
+- log-rank test p-value from `survdiff()`
+- censoring marks
+- number-at-risk table at 0, 50, 100, and 150 months
+
+7. Loads the treatment-history table:
+
+```r
+hx <- read.csv("txhistory.csv")
+```
+
+8. Generates a swimmer plot showing patient-level clinical course:
+
+```text
+swimmer.pdf
+```
+
+The swimmer plot displays:
+
+- overall survival time
+- vital status/censoring
+- initial disease status
+- recurrence timing, when available
+- non-metastatic interval
+- metastatic/recurrent disease interval
+- treatment exposure intervals
+- octreotide exposure, when available
+
+9. Uses the following columns from `ctx.net.asclc.csv` for the swimmer plot:
+
+```text
+study_id
+group
+max_ki67
+os_months2
+os_event2
+initial_ds
+rec_months
+infofield
+day1
+```
+
+10. Uses the following columns from `txhistory.csv` for treatment intervals:
+
+```text
+infofield
+info
+start_date
+end_date
+txsum
+```
+
+11. Uses `txcol` to assign colors to treatment categories in the swimmer plot.
+
+12. Uses `sa` to add octreotide exposure intervals, with expected columns including:
+
+```text
+infofield
+SA_eligible
+SA_start
+SA_end
+```
+
+13. Saves all outputs as PDF files in the working directory.
+
+Please note that `ctx.net.asclc.csv` and `txhistory.csv` contain patient-level survival, recurrence, and treatment-history information, thus the public release of these files are limited. 
