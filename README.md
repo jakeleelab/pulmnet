@@ -10,5 +10,5 @@ Citation: to be updated
 For the source code and tutorial for figure-related codes, see [figure_codes](src/figure_codes).
 
 ### Software and Tools
-For the source code and tutorial for `ctx_heuristic` see [ctx_heuristic](src/ctx_heuristic). /n
-For the source code and tutorial for `ctx_finder`, which is currently under development, see [ctx_finder](src/ctx_finder).
+For the source code and tutorial for `ctx_heuristic` see [ctx_heuristic](src/ctx_heuristic)
+For the source code and tutorial for `ctx_finder`, which is currently under development, see [ctx_finder](src/ctx_finder)
