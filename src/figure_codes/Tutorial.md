@@ -1,11 +1,5 @@
 ### Figure 1
 
-Run the Figure 1 script with:
-
-```r
-source("Figure1.R")
-```
-
 This script generates the pulmonary carcinoid genomic landscape figures, including:
 
 ```text
