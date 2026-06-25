@@ -1,6 +1,4 @@
-### 2.5 Figure-specific workflow
-
-#### Figure 1
+### Figure 1
 
 Run the Figure 1 script with:
 
