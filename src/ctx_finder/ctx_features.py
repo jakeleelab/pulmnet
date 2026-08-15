@@ -981,6 +981,288 @@ def apply_classifier_v6(cohort_df, purity_map, *, params=None,
     return d
 
 
+# ======================================================================
+# v7: manual-review-calibrated update
+# ----------------------------------------------------------------------
+# Tuned against a 206-patient roster with pathologist-consensus chromothripsis
+# calls (pulmnet.version2.brief) rather than picked a priori like v3/v5/v6.
+# Four changes on top of v6, each validated to add true positives with zero
+# or minimal added false positives on that roster:
+#
+#   1. min_osc_chain 5 -> 4.  One segment of headroom recovers real calls
+#      that clear every other bar; costs nothing (no roster negative sits at
+#      chain==4).
+#   2. noise_max 1.135 -> 1.0.  Tighter probe-noise ceiling; trades one
+#      borderline-on-every-axis true positive for two clearly-noisy false
+#      positives (net PPV/specificity gain).
+#   3. An alternate allelic-evidence path (see F_allelic_v7 below) and a
+#      parallel loss-dominant-baseline pathway (see
+#      compute_baseline_shard_features) for chromothripsis patterns the v6
+#      mechanistic score structurally cannot see: post-WGD chromothripsis
+#      that never drops minor-allele copy number to literal zero, and
+#      loss-dominant chromothripsis where the shattered/lost state IS the
+#      chromosome's own local majority, so nothing reads as "altered"
+#      relative to itself.
+#   4. A gated "second look" on cp_osc_confidence (see
+#      compute_second_look_confidence below). The probe-level confidence
+#      check runs at an anti-flood pen_const=8.0, calibrated cohort-wide to
+#      stop noisy libraries from generating spurious changepoints. That
+#      same stiffness can zero out a chromosome with a maximal FACETS-level
+#      mechanistic score (ctx_score>=0.8) whose real, well-separated jumps
+#      still don't individually clear the fixed per-breakpoint cost. For
+#      that narrow case only, re-check at pen_const=5.0 (one calibration
+#      step gentler, not a return to the uncalibrated default) and use it
+#      if higher. Gated tightly enough (ctx_score>=0.8 AND
+#      cp_osc_confidence==0) that it fires on exactly 2 chromosomes in the
+#      full 296-sample cohort -- one is C012 chr15 (recovers the
+#      cohort's last false negative), the other is independently vetoed by
+#      the noise gate regardless. Zero added false positives.
+# ======================================================================
+
+def compute_baseline_shard_features(seg_df, ploidy, *,
+                                    shard_ploidy_mult=4.0,
+                                    deficit_min=0.5,
+                                    baseline_frac_min=0.5,
+                                    small_frac_max=0.15,
+                                    tcn_col="tcn.em"):
+    """
+    Per-chromosome "loss-dominant baseline + retained/amplified shard" features.
+
+    Some chromothripsis events are loss-dominant: most of the chromosome
+    collapses to one low copy-number state, so oscillation-chain features
+    (built relative to that chromosome's own modal state) see nothing
+    "altered" -- the lost state IS the local mode. Comparing the chromosome's
+    dominant state against the sample's genome-wide ploidy surfaces these
+    cases. Requiring a small, highly-amplified surviving fragment (a "shard")
+    keeps the signal specific to real shattering rather than an ordinary
+    whole-chromosome deletion, which has no such internal structure.
+
+    Returns one row per chromosome: baseline_cn (the length-weighted modal
+    total-CN state), baseline_frac (how much of the chromosome that state
+    covers), deficit (ploidy - baseline_cn), n_shards, and the boolean
+    loss_dominant_shard_hit -- plus extent_start/extent_end/extent_length_mb/
+    extent_frac: the genomic SPAN (first-to-last position) of the segments
+    at the baseline state, as opposed to baseline_frac's total COVERAGE.
+    These differ whenever the baseline state is fragmented (interrupted by
+    the shard, or by other segments) rather than one contiguous block -- a
+    baseline that's scattered in small patches across the whole chromosome
+    has high extent but can have much lower coverage; a baseline confined
+    to one corner has both low extent and low coverage. extent_frac divides
+    by the chromosome's own observed SPAN (first segment start to last
+    segment end, across all states) rather than by summed segment length,
+    since the two diverge whenever a chromosome carries a large
+    probe-desert gap (e.g. spanning the centromere).
+    """
+    seg = seg_df.copy()
+    seg["_c"] = seg["chrom"].map(_norm_chrom)
+    seg["_start"] = pd.to_numeric(seg["loc.start"], errors="coerce")
+    seg["_end"] = pd.to_numeric(seg["loc.end"], errors="coerce")
+    seg["_len"] = (seg["_end"] - seg["_start"]).clip(lower=0)
+
+    rows = []
+    for c, g in seg.groupby("_c"):
+        g = g.assign(_tcn=pd.to_numeric(g[tcn_col], errors="coerce")).dropna(subset=["_tcn"])
+        chrom_len = g["_len"].sum()
+        chrom_span = (g["_end"].max() - g["_start"].min()) if len(g) else np.nan
+        if g.empty or chrom_len <= 0 or pd.isna(ploidy):
+            rows.append(dict(chrom=c, baseline_cn=np.nan, baseline_frac=np.nan,
+                              deficit=np.nan, n_shards=0, loss_dominant_shard_hit=False,
+                              extent_start=np.nan, extent_end=np.nan,
+                              extent_length_mb=np.nan, extent_frac=np.nan))
+            continue
+        by_state = g.groupby("_tcn")["_len"].sum().sort_values(ascending=False)
+        baseline_cn = float(by_state.index[0])
+        baseline_frac = float(by_state.iloc[0] / chrom_len)
+        deficit = float(ploidy - baseline_cn)
+        g = g.assign(_len_frac=g["_len"] / chrom_len)
+        shard_thr = shard_ploidy_mult * ploidy
+        shards = g[(g["_len_frac"] <= small_frac_max) & (g["_tcn"] >= shard_thr)]
+        hit = (deficit >= deficit_min) and (baseline_frac >= baseline_frac_min) and (len(shards) >= 1)
+
+        base_segs = g.loc[g["_tcn"] == baseline_cn]
+        extent_start = float(base_segs["_start"].min())
+        extent_end = float(base_segs["_end"].max())
+        extent_length_mb = (extent_end - extent_start) / 1e6
+        extent_frac = float((extent_end - extent_start) / chrom_span) if chrom_span and chrom_span > 0 else np.nan
+
+        rows.append(dict(chrom=c, baseline_cn=baseline_cn, baseline_frac=round(baseline_frac, 4),
+                          deficit=round(deficit, 3), n_shards=int(len(shards)),
+                          loss_dominant_shard_hit=bool(hit),
+                          extent_start=extent_start, extent_end=extent_end,
+                          extent_length_mb=round(extent_length_mb, 2),
+                          extent_frac=round(extent_frac, 4) if pd.notna(extent_frac) else np.nan))
+    return pd.DataFrame(rows)
+
+
+def compute_second_look_confidence(cohort_df, man_df, tablesDir, *,
+                                   score_col="ctx_score",
+                                   conf_col="cp_osc_confidence",
+                                   score_min=0.8,
+                                   pen_fallback=5.0,
+                                   sample_col="SAMPLE_ID",
+                                   chrom_col="chrom"):
+    """
+    Gated re-check of cp_osc_confidence at a gentler penalty for chromosomes
+    the anti-flood pen_const=8.0 probe recheck zeroed out despite a strong
+    FACETS-level mechanistic score. See v7 module docstring, change 4.
+
+    `cohort_df` must already carry `score_col` (i.e. call after
+    compute_ctx_score / apply_classifier_v6). Only recomputes for rows
+    matching the gate -- validated to be 2 rows in the full cohort, so this
+    is cheap even though it re-reads cached jointseg TSVs from `tablesDir`.
+
+    Returns a DataFrame with columns [sample_col, chrom_col,
+    "cp_osc_confidence_v7"] -- the gentler-penalty confidence, ready to
+    `.merge(..., how="left")` and `np.maximum` against the original
+    `conf_col` in apply_classifier_v7.
+    """
+    import os
+    import ctx_changepoint as ccp
+
+    gate = (pd.to_numeric(cohort_df[score_col], errors="coerce") >= score_min) & \
+           (pd.to_numeric(cohort_df[conf_col], errors="coerce") == 0.0)
+    cand = cohort_df.loc[gate, [sample_col, chrom_col]].drop_duplicates()
+
+    rows = []
+    for _, row in cand.iterrows():
+        sid, chrom = row[sample_col], row[chrom_col]
+        jpath = os.path.join(tablesDir, f"{sid}.hisens.jointseg.tsv")
+        if not os.path.exists(jpath):
+            continue
+        j = pd.read_csv(jpath, sep="\t")
+        j["_c"] = j["chrom"].map(_norm_chrom)
+        sub = j.loc[j["_c"] == _norm_chrom(chrom)].sort_values("maploc")
+        prow = man_df.loc[man_df[sample_col].astype(str).eq(str(sid))]
+        purity = float(prow["purity"].iloc[0]) if prow.shape[0] and pd.notna(prow["purity"].iloc[0]) else None
+        ploidy = float(prow["ploidy"].iloc[0]) if prow.shape[0] and pd.notna(prow["ploidy"].iloc[0]) else 2.0
+        f = ccp.probe_changepoint_features(sub, purity=purity, ploidy=ploidy, pen_const=pen_fallback)
+        rows.append({sample_col: sid, chrom_col: chrom, "cp_osc_confidence_v7": f["cp_osc_confidence"]})
+    return pd.DataFrame(rows, columns=[sample_col, chrom_col, "cp_osc_confidence_v7"])
+
+
+def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None, params=None,
+                        threshold=0.35,
+                        suppress=(0.0, 3.0, 0.0),
+                        noise_col="dot_mad_within",
+                        noise_max=1.0,
+                        probe_conf_col="cp_osc_confidence",
+                        chain_col="longest_osc_chain_k3",
+                        min_osc_chain=4,
+                        footprint_union_col="altered_union_frac",
+                        footprint_island_col="n_altered_islands",
+                        footprint_union_min=0.15,
+                        footprint_island_max=3,
+                        allelic_alt_lo=8.0,
+                        allelic_alt_hi=15.0,
+                        allelic_alt_frac_loh_max=0.05,
+                        sample_col="SAMPLE_ID",
+                        chrom_col="chrom"):
+    """
+    v6 with four calibrated changes -- see module docstring above. `shard_df`
+    is the concatenation of `compute_baseline_shard_features` output across
+    the cohort, with a SAMPLE_ID column added per sample, merged on
+    (SAMPLE_ID, chrom). `second_look_df`, if given, is
+    `compute_second_look_confidence`'s output (SAMPLE_ID, chrom,
+    cp_osc_confidence_v7), merged the same way; omit to fall back to plain
+    v6-style confidence (no second look).
+    """
+    required = [
+        noise_col, probe_conf_col, chain_col,
+        footprint_union_col, footprint_island_col,
+        "loh_het_interleave", "frac_loh", "n_allelic_state_changes",
+    ]
+    missing = [c for c in required if c not in cohort_df.columns]
+    if missing:
+        raise KeyError(f"Missing required v7 columns: {missing}")
+
+    c0, c1, m0 = suppress
+
+    d = compute_ctx_score(
+        cohort_df,
+        purity_map,
+        params=params,
+        use_quality=False,
+        mech_combine="product",
+    )
+
+    # ---- alternate allelic-evidence path: WGD-masked chromothripsis ----
+    # Fires only when there is NO absolute LOH anywhere on the chromosome
+    # (frac_loh ~ 0 -- consistent with a doubled genome retaining a
+    # wild-type-like copy) but the minor-allele copy number is nonetheless
+    # changing state repeatedly (n_allelic_state_changes), i.e. real allelic
+    # complexity that never crosses to literal zero. Gated tightly (ramp
+    # starts at 8 transitions, not the 1 used for the ordinary LOH<->het
+    # interleave) so it doesn't just reproduce blanket F_allelic removal --
+    # validated to add zero false positives on the roster at this setting.
+    p = params or ScoreParams()
+    interleave_ramp = _ramp(pd.to_numeric(d["loh_het_interleave"], errors="coerce").fillna(0),
+                            p.allelic_lo, p.allelic_hi)
+    frac_loh = pd.to_numeric(d["frac_loh"], errors="coerce")
+    n_changes = pd.to_numeric(d["n_allelic_state_changes"], errors="coerce")
+    alt_credit = np.where(frac_loh < allelic_alt_frac_loh_max,
+                          _ramp(n_changes, allelic_alt_lo, allelic_alt_hi), 0.0)
+    het_ok = pd.to_numeric(d["n_het_probes"], errors="coerce").fillna(0) >= p.min_het_for_allelic
+    allelic_raw = np.maximum(interleave_ramp, alt_credit)
+    F_allelic_v7 = np.where(het_ok,
+                            p.allelic_floor + (1 - p.allelic_floor) * allelic_raw,
+                            p.allelic_floor)
+    d["F_allelic_v7"] = F_allelic_v7
+    mech = pd.to_numeric(d["F_osc"], errors="coerce").fillna(0.0) * F_allelic_v7
+
+    conf = pd.to_numeric(d[probe_conf_col], errors="coerce").fillna(0.0)
+    if second_look_df is not None and len(second_look_df):
+        sl = second_look_df[[sample_col, chrom_col, "cp_osc_confidence_v7"]].copy()
+        sl[chrom_col] = sl[chrom_col].astype(str)
+        d[chrom_col] = d[chrom_col].astype(str)
+        d = d.merge(sl, on=[sample_col, chrom_col], how="left")
+        second_look = pd.to_numeric(d["cp_osc_confidence_v7"], errors="coerce").fillna(0.0)
+        conf = np.maximum(conf, second_look)
+    ramp = np.clip((conf - c0) / max(c1 - c0, 1e-9), 0.0, 1.0)
+    d["ctx_suppress_v7"] = mech * (m0 + (1.0 - m0) * ramp)
+
+    noise = pd.to_numeric(d[noise_col], errors="coerce")
+    chain = pd.to_numeric(d[chain_col], errors="coerce").fillna(0)
+    union = pd.to_numeric(d[footprint_union_col], errors="coerce").fillna(-np.inf)
+    islands = pd.to_numeric(d[footprint_island_col], errors="coerce").fillna(0)
+
+    d["nominated_score_v7"] = d["ctx_suppress_v7"] >= threshold
+    d["min_osc_chain_pass_v7"] = chain >= min_osc_chain
+    d["noise_veto_v7"] = noise.notna() & (noise > noise_max)
+    d["weak_altered_footprint_v7"] = (union < footprint_union_min) & (islands <= footprint_island_max)
+
+    nominated_main = (
+        d["nominated_score_v7"] &
+        d["min_osc_chain_pass_v7"] &
+        (~d["noise_veto_v7"]) &
+        (~d["weak_altered_footprint_v7"])
+    )
+
+    # ---- parallel loss-dominant-baseline pathway ----
+    # shard_df hits already carry their own noise/deficit/footprint logic
+    # (see compute_baseline_shard_features); still gate on the SAME noise
+    # ceiling as the main pathway, since that's what separated the real
+    # rescues from the "horribly noisy library" false positives on the
+    # roster (dot_mad_within<=1.0 cleanly split both).
+    sd = shard_df[[sample_col, chrom_col, "loss_dominant_shard_hit"]].copy()
+    sd[chrom_col] = sd[chrom_col].astype(str)
+    d[chrom_col] = d[chrom_col].astype(str)
+    d = d.merge(sd, on=[sample_col, chrom_col], how="left")
+    d["loss_dominant_shard_hit"] = d["loss_dominant_shard_hit"].fillna(False)
+    shard_pathway = d["loss_dominant_shard_hit"] & (~d["noise_veto_v7"])
+
+    d["nominated_v7"] = nominated_main | shard_pathway
+    d["sample_flag_v7"] = d.groupby(sample_col)["nominated_v7"].transform("any")
+
+    d["v7_threshold"] = threshold
+    d["v7_noise_max"] = noise_max
+    d["v7_min_osc_chain"] = min_osc_chain
+    d["v7_footprint_union_min"] = footprint_union_min
+    d["v7_footprint_island_max"] = footprint_island_max
+    d["v7_allelic_alt_lo"] = allelic_alt_lo
+    d["v7_allelic_alt_hi"] = allelic_alt_hi
+    d["v7_allelic_alt_frac_loh_max"] = allelic_alt_frac_loh_max
+
+    return d
 
 
 def sample_level_counts(df, nominated_col="nominated_v3",
