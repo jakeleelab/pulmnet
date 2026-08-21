@@ -17,7 +17,94 @@ ctx_finder/
 ├── ctx_features.py        # chromosome features + v6 classifier + evaluation
 ├── ctx_cp_parallel.py     # Slurm-array launcher / worker / collector
 ├── ctx_label.py           # per-chromosome inspection plots
-└── ctx_plots.py           # cohort-level diagnostic plots
+├── ctx_plots.py           # cohort-level diagnostic plots
+└── ctx_sibling.py         # sibling-sample corroboration check
+```
+
+## Sibling corroboration (`ctx_sibling.py`)
+
+For patients with multiple samples, a chromosome can be nominated in one sample
+but missed in another (e.g. a noisier library pushes it below threshold). Real,
+shared structural events reproduce FACETS segment breakpoints at (near-)identical
+positions across independent samples from the same tumor -- probe positions are
+fixed by the panel, so this is a strong, checkable signature -- while unrelated
+samples show no such relationship.
+
+`ctx_sibling.sibling_corroboration_report(cohort_df, man_df)` finds every
+discordant (patient, chrom) pair in a classifier output table and, for each,
+computes what fraction of the flagged sample's breakpoints have a match (within
+`tol`, default 200kb) in the "missed" sibling, then ranks that match fraction
+against an empirical null built from every other sample in the cohort on that
+same chromosome. A high percentile with a nontrivial absolute match fraction is
+quantitative support for a real, shared-but-missed event; a percentile near 0
+means the "missed" sample most likely genuinely lacks the event (a real
+negative, not a detection failure). Validated against carcinoid sibling pairs
+already resolved by manual review -- known-corroborating pairs scored 100th
+percentile, a known-non-matching pair scored 0th, and a pair the domain expert
+called only "supporting evidence" (not fully convincing) scored an intermediate
+84.7th percentile with thin absolute overlap, tracking the expert's own
+confidence.
+
+Caution: with very few breakpoints on a chromosome, a single coincidental match
+can produce a moderate-looking percentile purely because the null distribution
+is sparse -- always read `percentile` together with `match_frac` and
+`n_bp_flagged`, not `percentile` alone.
+
+```python
+import ctx_sibling as csib
+report = csib.sibling_corroboration_report(v7, man_df)   # v7 = apply_classifier_v7 output
+```
+
+## Thin-chain reliability filter (`ctx_features.apply_thin_chain_filter`)
+
+Manual review of classical-SCLC false positives (2026-08) found a specific
+failure mode: the oscillating tcn.em labels driving a `nominated_v7` call were
+sometimes carried by a single thin FACETS segment with an unreliable
+cellular-fraction estimate (`cf.em`), sandwiched between two ordinary segments
+-- not a real recurring structural event. Segment genomic span is unreliable
+evidence of this on panel data (a segment can span megabases with almost no
+probes in it), and even het-SNP count (`nhet`) alone doesn't discriminate --
+real chromothripsis, including the loss-dominant/shard pathway, legitimately
+produces small, low-nhet segments too. `cf.em` on the specific segment(s)
+forming the chain does discriminate.
+
+`apply_thin_chain_filter(cohort_df, man_df, tablesDir, threshold=0.15)` computes,
+for every nominated **conventional-pathway** (non-shard) chromosome, the minimum
+`cf.em` among "spike" segments -- ones whose rounded tcn.em differs from both
+immediate neighbors -- **restricted to the segment run that actually forms
+`longest_osc_chain_k3`**, not just any spike anywhere on the chromosome. That
+restriction matters: an earlier, chromosome-wide version of this check wrongly
+vetoed a confirmed-real, dramatically-oscillating carcinoid case
+(C009-T01-IM6 chr1, cnlr swings up to 2.6) because of one unrelated weak
+segment sitting outside the actual chain; restricting to the chain window
+correctly clears it while still catching genuine thin-evidence artifacts (e.g.
+C002-T01-IM5 chr11, whose only supporting evidence *is* the weak spike).
+
+The loss-dominant/shard pathway (`loss_dominant_shard_hit`) is deliberately
+excluded from this filter -- it has its own noise/deficit logic already, and
+was empirically untouched by this check at every threshold tested (0/40 shard
+calls caught at threshold=0.15 in classical SCLC; carcinoid's own shard hits
+sit at `cf.em` >= 0.117), consistent with those calls legitimately producing
+small, thin segments this metric would otherwise misread as unreliable.
+
+Validated against manual domain-expert review on the **carcinoid calibration
+cohort itself**, not just classical SCLC: at the default threshold (0.15), it
+catches exactly the 4 carcinoid calls confirmed weak/artifactual on review,
+while sparing the confirmed-real case above. Sample-level impact: carcinoid
+54/238 (22.7%) -> 53/238 (22.3%); classical SCLC 227/679 (33.4%) -> 220/679
+(32.4%). Not yet checked against pancnet/ginet/aSCLC -- re-validate before
+trusting the default threshold there.
+
+```python
+import ctx_features as cf
+filtered = cf.apply_thin_chain_filter(v7, man_df, tablesDir)   # v7 = apply_classifier_v7 output
+# use filtered["nominated_v7_filtered"] / filtered["sample_flag_v7_filtered"]
+```
+
+Or via the shared driver script:
+
+```bash
+python ctx_run_common/phase5_thin_chain_filter.py --manifest <path> --out <cohort_dir> [--v7-file ...] [--threshold 0.15]
 ```
 
 ## Installation (conda)

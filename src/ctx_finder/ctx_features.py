@@ -322,6 +322,51 @@ def longest_le_k_distinct_run_bounds(states, k):
     return dict(chain_len=int(best[0]), i0=int(collapsed[l]["i0"]), i1=int(collapsed[r]["i1"]))
 
 
+def _chain_restricted_min_cfem_spike(seg_chrom, tcn_col="tcn.em", chain_k=3):
+    """
+    Within the segment run that forms the sample's actual longest_osc_chain_k{chain_k}
+    (the same window `longest_le_k_distinct_run_bounds` scores), find any 'spike'
+    segment -- one whose rounded tcn.em state differs from BOTH immediate neighbors,
+    i.e. an isolated blip that creates a false transition in/out -- and return the
+    minimum FACETS `cf.em` (clonal-cluster confidence) among those spikes.
+
+    Restricting to the chain window (not just any spike anywhere on the chromosome)
+    matters: a chromosome can carry one weak, low-confidence segment alongside many
+    other strong, well-supported oscillating segments elsewhere -- vetoing the whole
+    chromosome for its single weakest link anywhere would wrongly kill real, dramatic
+    chromothripsis calls. Confirmed case: C009-T01-IM6 chr1 (carcinoid) has
+    ~15 segments with huge, well-supported cnlr swings (up to 2.6) plus one
+    low-cf.em segment outside the actual oscillation chain; a chromosome-wide
+    version of this check wrongly vetoed it (min_cfem=0.135), while restricting to
+    the chain window correctly clears it (0.195, chain doesn't include the weak
+    segment). By contrast C002-T01-IM5 chr11's only evidence *is* the weak
+    spike, and it stays vetoed under either version (0.135).
+
+    Returns (min_cfem, n_spikes_used); min_cfem is NaN if no scoreable spike exists
+    inside the chain window -- callers should treat NaN as "no evidence against
+    this row" and not veto on it.
+    """
+    s = _ordered_segments(seg_chrom)
+    T = pd.to_numeric(s.get(tcn_col), errors="coerce")
+    valid = T.notna()
+    s = s.loc[valid].reset_index(drop=True)
+    T = T.loc[valid].reset_index(drop=True)
+    if len(s) < 3:
+        return np.nan, 0
+    int_states = [int(round(t)) for t in T.tolist()]
+    bounds = longest_le_k_distinct_run_bounds(int_states, chain_k)
+    i0, i1 = bounds["i0"], bounds["i1"]
+    if pd.isna(i0):
+        return np.nan, 0
+    states = np.array(int_states)
+    cfems = s["cf.em"].to_numpy() if "cf.em" in s.columns else np.full(len(s), np.nan)
+    vals = []
+    for i in range(max(1, int(i0)), min(len(s) - 1, int(i1) + 1)):
+        if states[i] != states[i - 1] and states[i] != states[i + 1] and pd.notna(cfems[i]):
+            vals.append(cfems[i])
+    return (min(vals) if vals else np.nan), len(vals)
+
+
 def focal_span_features(seg_chr, pts_chr, tcn_col="tcn.em", lcn_col="lcn.em", k_states=3):
     seg_chr = _ordered_segments(seg_chr)
     starts = pd.to_numeric(seg_chr["loc.start"], errors="coerce").to_numpy(dtype=float)
@@ -1261,6 +1306,100 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     d["v7_allelic_alt_lo"] = allelic_alt_lo
     d["v7_allelic_alt_hi"] = allelic_alt_hi
     d["v7_allelic_alt_frac_loh_max"] = allelic_alt_frac_loh_max
+
+    return d
+
+
+def apply_thin_chain_filter(cohort_df, man_df, tablesDir, *,
+                            threshold=0.15,
+                            chain_k=3,
+                            nominated_col="nominated_v7",
+                            shard_col="loss_dominant_shard_hit",
+                            sample_col="SAMPLE_ID",
+                            chrom_col="chrom"):
+    """
+    Post-hoc reliability veto on top of `apply_classifier_v7`'s `nominated_v7`
+    calls -- see README, "Thin-chain reliability filter", for the full narrative.
+
+    Motivation: manual review of classical-SCLC false positives found the
+    oscillating tcn.em labels were sometimes carried by a single thin segment
+    with an unreliable FACETS cellular-fraction estimate (`cf.em`), sandwiched
+    between two ordinary segments -- not a real recurring event. Segment size
+    and het-SNP count (`nhet`) were tried first and don't discriminate (real
+    chromothripsis, including the loss-dominant/shard pathway, legitimately
+    produces small, low-nhet segments too); `cf.em` on the specific segments
+    forming the chain does.
+
+    Only applies to the CONVENTIONAL (non-shard) pathway (`shard_col == False`)
+    -- shard-pathway calls have their own noise/deficit logic in
+    `compute_baseline_shard_features` and were empirically untouched by this
+    check at every threshold tested (0/40 caught at threshold=0.15 in classical
+    SCLC; carcinoid's own shard hits sit at cf.em >= 0.117), consistent with the
+    working theory that shard/amplified-fragment chromothripsis legitimately
+    produces small, thin segments this metric would otherwise misread as
+    unreliable.
+
+    For each nominated, non-shard (sample, chrom), computes
+    `chain_min_cfem_spike` (see `_chain_restricted_min_cfem_spike`) and vetoes
+    (`nominated_v7_filtered=False`) when it's below `threshold`. Rows with no
+    scoreable spike (`chain_min_cfem_spike` is NaN) are left nominated -- no
+    evidence against them, so nothing is vetoed on missing data.
+
+    Validated (2026-08-21) against manual domain-expert review on the carcinoid
+    calibration cohort: at threshold=0.15, catches exactly the 4 carcinoid calls
+    confirmed weak/artifactual on review (C002-T01-IM5 chr11,
+    C017-T01-IM7 chr11, C017-T02-IM7 chr7, C020-T01-IM7 chr16),
+    while correctly sparing a confirmed-real dramatic oscillation
+    (C009-T01-IM6 chr1) that an earlier, chromosome-wide (not
+    chain-restricted) version of this rule would have wrongly vetoed. Sample-
+    level impact at this threshold: carcinoid 54/238 (22.7%) -> 53/238 (22.3%,
+    -1 sample); classical SCLC 227/679 (33.4%) -> 220/679 (32.4%, -7 samples).
+    Chromosome-level: carcinoid 89->85 nominated rows (-4.5%), classical SCLC
+    387->354 (-8.5%). Not yet checked against pancnet/ginet/aSCLC.
+
+    Requires `man_df` to carry `facets_cncf_path` (reads segment tables via
+    `run_ctx_pipeline.load_cncf` -- the raw per-sample cncf file, not the
+    cached jointseg, so no R/Rscript dependency here).
+
+    Returns `cohort_df` with new columns: `chain_min_cfem_spike`,
+    `n_chain_spikes`, `thin_chain_veto`, `nominated_v7_filtered`,
+    `sample_flag_v7_filtered`, `thin_chain_threshold`.
+    """
+    import run_ctx_pipeline as rp
+
+    d = cohort_df.copy()
+    d[chrom_col] = d[chrom_col].astype(str)
+    shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
+    nom = d[(d[nominated_col] == True) & (~shard)]
+
+    rows = []
+    cache = {}
+    for sid in nom[sample_col].unique():
+        if sid not in cache:
+            try:
+                seg_df = rp.load_cncf(man_df, sid)
+                seg_df["_c"] = seg_df["chrom"].map(_norm_chrom)
+                cache[sid] = seg_df
+            except Exception:
+                cache[sid] = None
+        seg_df = cache[sid]
+        if seg_df is None:
+            continue
+        for ch in nom.loc[nom[sample_col] == sid, chrom_col].unique():
+            s = seg_df[seg_df["_c"] == _norm_chrom(ch)]
+            min_cfem, n_spikes = _chain_restricted_min_cfem_spike(s, chain_k=chain_k)
+            rows.append({sample_col: sid, chrom_col: ch,
+                        "chain_min_cfem_spike": min_cfem, "n_chain_spikes": n_spikes})
+
+    feat = pd.DataFrame(rows, columns=[sample_col, chrom_col, "chain_min_cfem_spike", "n_chain_spikes"])
+    d = d.merge(feat, on=[sample_col, chrom_col], how="left")
+
+    d_shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
+    veto = (~d_shard) & (d["chain_min_cfem_spike"] < threshold)
+    d["thin_chain_veto"] = veto.fillna(False)
+    d["nominated_v7_filtered"] = d[nominated_col] & (~d["thin_chain_veto"])
+    d["sample_flag_v7_filtered"] = d.groupby(sample_col)["nominated_v7_filtered"].transform("any")
+    d["thin_chain_threshold"] = threshold
 
     return d
 
