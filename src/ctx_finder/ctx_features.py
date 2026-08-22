@@ -1310,60 +1310,124 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     return d
 
 
+def _break_and_recompute_chain(seg_chrom, tcn_col="tcn.em", chain_k=3, cfem_threshold=0.15):
+    """
+    v2 thin-chain mechanism (see `apply_thin_chain_filter` docstring for the
+    full v1-vs-v2 narrative). Rather than vetoing the whole chromosome for one
+    unreliable segment, treat any "spike" segment (state differs from BOTH
+    immediate neighbors) with `cf.em < cfem_threshold` as a BREAK in the
+    segment sequence -- excise it and prevent any chain from spanning across
+    the gap it leaves -- then recompute `longest_le_k_distinct_run` (k=chain_k)
+    independently on each surviving contiguous chunk and return the best
+    (longest) result. A chromosome with no qualifying break just returns its
+    ordinary chain length unchanged.
+
+    Returns an int (0 if every segment gets excised, which cannot happen in
+    practice since a spike by definition has non-spike neighbors on both
+    sides).
+    """
+    s = _ordered_segments(seg_chrom)
+    T = pd.to_numeric(s.get(tcn_col), errors="coerce")
+    valid = T.notna()
+    s = s.loc[valid].reset_index(drop=True)
+    T = T.loc[valid].reset_index(drop=True)
+    states = [int(round(t)) for t in T.tolist()]
+    if len(s) < 3:
+        return longest_le_k_distinct_run(states, chain_k)
+    cfems = s["cf.em"].to_numpy() if "cf.em" in s.columns else np.full(len(s), np.nan)
+
+    break_idx = set()
+    for i in range(1, len(states) - 1):
+        if states[i] != states[i - 1] and states[i] != states[i + 1] and pd.notna(cfems[i]) and cfems[i] < cfem_threshold:
+            break_idx.add(i)
+
+    if not break_idx:
+        return longest_le_k_distinct_run(states, chain_k)
+
+    chunks, cur = [], []
+    for i, st in enumerate(states):
+        if i in break_idx:
+            if cur:
+                chunks.append(cur)
+            cur = []
+        else:
+            cur.append(st)
+    if cur:
+        chunks.append(cur)
+    return max((longest_le_k_distinct_run(c, chain_k) for c in chunks), default=0)
+
+
 def apply_thin_chain_filter(cohort_df, man_df, tablesDir, *,
-                            threshold=0.15,
+                            min_chain=4,
                             chain_k=3,
+                            cfem_threshold=0.15,
                             nominated_col="nominated_v7",
                             shard_col="loss_dominant_shard_hit",
                             sample_col="SAMPLE_ID",
                             chrom_col="chrom"):
     """
-    Post-hoc reliability veto on top of `apply_classifier_v7`'s `nominated_v7`
-    calls -- see README, "Thin-chain reliability filter", for the full narrative.
+    Post-hoc reliability check on top of `apply_classifier_v7`'s `nominated_v7`
+    calls -- see README, "Thin-chain reliability filter", for the full
+    narrative. This is v2 (LOCKED 2026-08-22), which supersedes and replaces
+    v1 (all-or-nothing veto on the chromosome's weakest chain segment).
 
-    Motivation: manual review of classical-SCLC false positives found the
-    oscillating tcn.em labels were sometimes carried by a single thin segment
-    with an unreliable FACETS cellular-fraction estimate (`cf.em`), sandwiched
-    between two ordinary segments -- not a real recurring event. Segment size
-    and het-SNP count (`nhet`) were tried first and don't discriminate (real
-    chromothripsis, including the loss-dominant/shard pathway, legitimately
-    produces small, low-nhet segments too); `cf.em` on the specific segments
-    forming the chain does.
+    Motivation (unchanged from v1): manual review of classical-SCLC false
+    positives found the oscillating tcn.em labels were sometimes carried by a
+    single thin segment with an unreliable FACETS cellular-fraction estimate
+    (`cf.em`), sandwiched between two ordinary segments -- not a real
+    recurring event. Segment size and het-SNP count (`nhet`) were tried first
+    and don't discriminate (real chromothripsis, including the loss-
+    dominant/shard pathway, legitimately produces small, low-nhet segments
+    too); `cf.em` on the specific segments forming the chain does.
+
+    v1 vs v2: v1 found the actual oscillation-chain window first
+    (`longest_le_k_distinct_run_bounds`), then vetoed the ENTIRE chromosome if
+    any spike inside that window had cf.em below threshold -- correct when the
+    chromosome's only evidence is that one weak segment, but wrong when a real,
+    well-supported chain survives around it (GI NET's C016-T02-IM7 chr3,
+    `2,1,4,1,4,1,2,1,2`, is real chromothripsis per manual review despite one
+    bad `tcn=4` pair). v2 fixes this by treating the unreliable spike as a
+    BREAK (`_break_and_recompute_chain`) rather than a whole-chromosome veto:
+    excise it, recompute the longest surviving chain on each side, and only
+    fail the chromosome if the BEST surviving chain is below `min_chain`
+    (default 4, matching `apply_classifier_v7`'s own `min_osc_chain`). This
+    keeps GI NET chr3 (surviving chain = 4, right at the bar) while still
+    correctly dropping chromosomes whose only evidence is the weak segment
+    itself.
 
     Only applies to the CONVENTIONAL (non-shard) pathway (`shard_col == False`)
     -- shard-pathway calls have their own noise/deficit logic in
-    `compute_baseline_shard_features` and were empirically untouched by this
-    check at every threshold tested (0/40 caught at threshold=0.15 in classical
-    SCLC; carcinoid's own shard hits sit at cf.em >= 0.117), consistent with the
-    working theory that shard/amplified-fragment chromothripsis legitimately
-    produces small, thin segments this metric would otherwise misread as
-    unreliable.
+    `compute_baseline_shard_features` and were empirically untouched by v1 at
+    every threshold tested (carcinoid's own shard hits sit at cf.em >= 0.117),
+    consistent with the working theory that shard/amplified-fragment
+    chromothripsis legitimately produces small, thin segments this metric
+    would otherwise misread as unreliable.
 
-    For each nominated, non-shard (sample, chrom), computes
-    `chain_min_cfem_spike` (see `_chain_restricted_min_cfem_spike`) and vetoes
-    (`nominated_v7_filtered=False`) when it's below `threshold`. Rows with no
-    scoreable spike (`chain_min_cfem_spike` is NaN) are left nominated -- no
-    evidence against them, so nothing is vetoed on missing data.
-
-    Validated (2026-08-21) against manual domain-expert review on the carcinoid
-    calibration cohort: at threshold=0.15, catches exactly the 4 carcinoid calls
-    confirmed weak/artifactual on review (C002-T01-IM5 chr11,
-    C017-T01-IM7 chr11, C017-T02-IM7 chr7, C020-T01-IM7 chr16),
-    while correctly sparing a confirmed-real dramatic oscillation
-    (C009-T01-IM6 chr1) that an earlier, chromosome-wide (not
-    chain-restricted) version of this rule would have wrongly vetoed. Sample-
-    level impact at this threshold: carcinoid 54/238 (22.7%) -> 53/238 (22.3%,
-    -1 sample); classical SCLC 227/679 (33.4%) -> 220/679 (32.4%, -7 samples).
-    Chromosome-level: carcinoid 89->85 nominated rows (-4.5%), classical SCLC
-    387->354 (-8.5%). Not yet checked against pancnet/ginet/aSCLC.
+    Validated (2026-08-22) on the carcinoid calibration cohort against the
+    CURRENT (corrected) ground truth -- of the 73 conventional-pathway
+    `nominated_v7` rows, v2 at min_chain=4 drops only 1
+    (C002-T01-IM5 chr11, the one case with solid confirmed-fake ground
+    truth) and correctly restores the 2 rows v1 had wrongly vetoed after
+    later domain-expert re-review found them real: C017-T01-IM7 chr11
+    (cross-sibling corroborated) and C020-T01-IM7 chr16 ("okay to keep").
+    A third v1-vetoed row, C017-T02-IM7 chr7, remains genuinely
+    borderline/unresolved either way. Chromosome-level: carcinoid 89 (raw v7)
+    -> 85 (v1) -> 88 (v2). Sample-level is IDENTICAL between v1 and v2 (53/238
+    either way) -- the 3 rescued rows all belong to samples already counted
+    positive via another nominated chromosome, so v2 is a strict
+    chromosome-level accuracy improvement with no sample-level cost. Not
+    re-validated against csclc/pancnet/ginet/aSCLC under v2 specifically (v1's
+    validation numbers there -- csclc 227/679->220/679 -- predate this
+    change and should be re-checked before being cited as current).
 
     Requires `man_df` to carry `facets_cncf_path` (reads segment tables via
     `run_ctx_pipeline.load_cncf` -- the raw per-sample cncf file, not the
     cached jointseg, so no R/Rscript dependency here).
 
-    Returns `cohort_df` with new columns: `chain_min_cfem_spike`,
-    `n_chain_spikes`, `thin_chain_veto`, `nominated_v7_filtered`,
-    `sample_flag_v7_filtered`, `thin_chain_threshold`.
+    Returns `cohort_df` with new columns: `thin_chain_best_chain` (the best
+    surviving chain length after breaking, equal to the original
+    `longest_osc_chain_k3` when no break applies), `thin_chain_veto`,
+    `nominated_v7_filtered`, `sample_flag_v7_filtered`, `thin_chain_min_chain`.
     """
     import run_ctx_pipeline as rp
 
@@ -1387,19 +1451,154 @@ def apply_thin_chain_filter(cohort_df, man_df, tablesDir, *,
             continue
         for ch in nom.loc[nom[sample_col] == sid, chrom_col].unique():
             s = seg_df[seg_df["_c"] == _norm_chrom(ch)]
-            min_cfem, n_spikes = _chain_restricted_min_cfem_spike(s, chain_k=chain_k)
-            rows.append({sample_col: sid, chrom_col: ch,
-                        "chain_min_cfem_spike": min_cfem, "n_chain_spikes": n_spikes})
+            best_chain = _break_and_recompute_chain(s, chain_k=chain_k, cfem_threshold=cfem_threshold)
+            rows.append({sample_col: sid, chrom_col: ch, "thin_chain_best_chain": best_chain})
 
-    feat = pd.DataFrame(rows, columns=[sample_col, chrom_col, "chain_min_cfem_spike", "n_chain_spikes"])
+    feat = pd.DataFrame(rows, columns=[sample_col, chrom_col, "thin_chain_best_chain"])
     d = d.merge(feat, on=[sample_col, chrom_col], how="left")
 
     d_shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
-    veto = (~d_shard) & (d["chain_min_cfem_spike"] < threshold)
+    veto = (~d_shard) & (d["thin_chain_best_chain"] < min_chain)
     d["thin_chain_veto"] = veto.fillna(False)
     d["nominated_v7_filtered"] = d[nominated_col] & (~d["thin_chain_veto"])
     d["sample_flag_v7_filtered"] = d.groupby(sample_col)["nominated_v7_filtered"].transform("any")
-    d["thin_chain_threshold"] = threshold
+    d["thin_chain_min_chain"] = min_chain
+
+    return d
+
+
+def _n_loss_segments(seg_chrom, tcn_col="tcn.em", lcn_col="lcn.em"):
+    """
+    Counts merged "loss" blocks on a chromosome, where a raw segment counts as
+    loss if round(tcn.em)==1 OR round(lcn.em)==0 -- complete LOH at any total
+    copy number, not just haploid loss (catches copy-neutral/amplified LOH
+    too). Adjacent raw segments that are both loss-flagged merge into one
+    block regardless of which condition triggered each, or whether their
+    exact tcn/lcn differ -- consistent with the case-browser's loss-segment
+    visualization (see README, "Loss-segment filter").
+
+    Deliberately has NO cf.em reliability gate. Tested filtering unreliable
+    segments out before merging (2026-08-22) and rejected it: the "unreliable"
+    divider segments sitting between confirmed-real loss blocks
+    (C009-T01-IM6 chr1, C017-T01-IM7 chr11, C020-T01-IM7 chr16)
+    are real, qualitatively distinct amplified/retained islands (often the
+    exact same cf.em value recurring at multiple genomic locations -- one
+    uncertain clonal cluster, not noise), not unreliable segmentation.
+    Filtering them out before merging would fuse separate loss events
+    together and erase the most diagnostic feature in all three cases.
+    """
+    s = _ordered_segments(seg_chrom)
+    T = pd.to_numeric(s.get(tcn_col), errors="coerce")
+    valid = T.notna()
+    s = s.loc[valid].reset_index(drop=True)
+    T = T.loc[valid].reset_index(drop=True)
+    L = pd.to_numeric(s.get(lcn_col), errors="coerce") if lcn_col in s.columns else pd.Series(np.nan, index=s.index)
+
+    n, prev_loss = 0, False
+    for t, l in zip(T.tolist(), L.tolist()):
+        loss = (int(round(t)) == 1) or (pd.notna(l) and int(round(l)) == 0)
+        if loss and not prev_loss:
+            n += 1
+        prev_loss = loss
+    return n
+
+
+def apply_loss_segment_filter(cohort_df, man_df, *,
+                              min_loss_segments=3,
+                              nominated_col="nominated_v7_filtered",
+                              shard_col="loss_dominant_shard_hit",
+                              frac_loh_col="frac_loh",
+                              n_allelic_col="n_allelic_state_changes",
+                              alt_frac_loh_max_col="v7_allelic_alt_frac_loh_max",
+                              alt_lo_col="v7_allelic_alt_lo",
+                              sample_col="SAMPLE_ID",
+                              chrom_col="chrom"):
+    """
+    Second post-hoc filter, applied on top of `apply_thin_chain_filter`'s
+    output -- see README, "Loss-segment filter", for the full narrative.
+    LOCKED 2026-08-22.
+
+    Motivation: manual review of 15 randomly-selected classical-SCLC/
+    pancreatic-NET/GI-NET chromosomes that survive v7 + the thin-chain filter
+    but carry only 2 loss segments (see `_n_loss_segments`) found them
+    convincing-looking (well-supported segments, no noise concerns) but
+    qualitatively simple -- almost always a single broad-arm loss (sometimes
+    on each arm), not the fragmented multi-breakpoint pattern that
+    characterizes real chromothripsis. Domain-expert judgment: "it is hard to
+    justify chromosomes with 2-loss segments as chromothripsis" on sparse
+    panel data, where segment size is an unreliable proxy for genomic extent.
+
+    For each currently-nominated, non-shard (sample, chrom), keeps the call
+    only if EITHER `n_loss_segments >= min_loss_segments` (default 3) OR the
+    row independently qualifies for the SAME WGD-masked allelic rescue
+    `apply_classifier_v7` already uses (`frac_loh < v7_allelic_alt_frac_loh_max`
+    AND `n_allelic_state_changes >= v7_allelic_alt_lo`) -- a chromosome with
+    real minor-allele complexity substituting for literal LOH (e.g.
+    C007-T01-IM6 chr11/chr12, chromothripsis arising after a
+    genome-doubling event) should not be penalized for having zero loss
+    segments by construction. Loss-dominant/shard-pathway calls are trusted
+    unconditionally, same as the thin-chain filter.
+
+    Deliberately does NOT search for chromosomes v7 never nominated at all,
+    even though a cohort-wide scan for such "hidden" chromosomes did surface a
+    handful of real-looking cases (e.g. C014-T01-IM7 chr11, excluded only
+    by `weak_altered_footprint_v7`) -- that same scan also produced far more
+    noise-driven false leads (most of one bad-fit outlier's, C004's,
+    hits), so it isn't reliable enough to run unattended and is deliberately
+    left as a manual-review exercise rather than baked into this filter.
+
+    Validated (2026-08-22) on the carcinoid calibration cohort atop v2 of the
+    thin-chain filter: of 88 nominated_v7_filtered rows, drops 19 (all sitting
+    at exactly 2 loss segments -- none at 0 or 1), keeping 69. Sample-level:
+    53/238 -> 46/238 (7 samples flip; 2 of those 7 are known to have a
+    different, never-nominated-by-v7 chromosome that independently clears the
+    bar on manual review -- C022-T02-IM7 chr11, C023-T01-IM7 chr8 --
+    so the true count accounting for those is 48/238; this filter alone
+    cannot find such rows, by design, see above). Spot-checked 5 random flips
+    each in classical SCLC, pancreatic NET/NEC, and GI NET (2026-08-22) and
+    confirmed convincing: none looked like noise, all read as simple
+    broad-arm loss rather than chromothripsis.
+
+    Returns `cohort_df` with new columns: `n_loss_segments`,
+    `wgd_rescue_eligible`, `loss_segment_veto`, `nominated_final`,
+    `sample_flag_final`, `loss_segment_min_count`.
+    """
+    import run_ctx_pipeline as rp
+
+    d = cohort_df.copy()
+    d[chrom_col] = d[chrom_col].astype(str)
+    shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
+    nom = d[(d[nominated_col] == True) & (~shard)]
+
+    rows = []
+    cache = {}
+    for sid in nom[sample_col].unique():
+        if sid not in cache:
+            try:
+                seg_df = rp.load_cncf(man_df, sid)
+                seg_df["_c"] = seg_df["chrom"].map(_norm_chrom)
+                cache[sid] = seg_df
+            except Exception:
+                cache[sid] = None
+        seg_df = cache[sid]
+        if seg_df is None:
+            continue
+        for ch in nom.loc[nom[sample_col] == sid, chrom_col].unique():
+            s = seg_df[seg_df["_c"] == _norm_chrom(ch)]
+            rows.append({sample_col: sid, chrom_col: ch, "n_loss_segments": _n_loss_segments(s)})
+
+    feat = pd.DataFrame(rows, columns=[sample_col, chrom_col, "n_loss_segments"])
+    d = d.merge(feat, on=[sample_col, chrom_col], how="left")
+
+    wgd_rescue = (d[frac_loh_col] < d[alt_frac_loh_max_col]) & (d[n_allelic_col] >= d[alt_lo_col])
+    d["wgd_rescue_eligible"] = wgd_rescue.fillna(False)
+
+    d_shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
+    veto = (~d_shard) & (d[nominated_col] == True) & (d["n_loss_segments"] < min_loss_segments) & (~d["wgd_rescue_eligible"])
+    d["loss_segment_veto"] = veto.fillna(False)
+    d["nominated_final"] = d[nominated_col] & (~d["loss_segment_veto"])
+    d["sample_flag_final"] = d.groupby(sample_col)["nominated_final"].transform("any")
+    d["loss_segment_min_count"] = min_loss_segments
 
     return d
 

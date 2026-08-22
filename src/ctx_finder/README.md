@@ -68,32 +68,45 @@ real chromothripsis, including the loss-dominant/shard pathway, legitimately
 produces small, low-nhet segments too. `cf.em` on the specific segment(s)
 forming the chain does discriminate.
 
-`apply_thin_chain_filter(cohort_df, man_df, tablesDir, threshold=0.15)` computes,
-for every nominated **conventional-pathway** (non-shard) chromosome, the minimum
-`cf.em` among "spike" segments -- ones whose rounded tcn.em differs from both
-immediate neighbors -- **restricted to the segment run that actually forms
-`longest_osc_chain_k3`**, not just any spike anywhere on the chromosome. That
-restriction matters: an earlier, chromosome-wide version of this check wrongly
-vetoed a confirmed-real, dramatically-oscillating carcinoid case
-(C009-T01-IM6 chr1, cnlr swings up to 2.6) because of one unrelated weak
-segment sitting outside the actual chain; restricting to the chain window
-correctly clears it while still catching genuine thin-evidence artifacts (e.g.
-C002-T01-IM5 chr11, whose only supporting evidence *is* the weak spike).
+**This is v2 (2026-08-22), which supersedes v1.** v1 found the actual
+oscillation-chain window (`longest_osc_chain_k3`'s segment run) and vetoed the
+**entire chromosome** if any "spike" segment in that window (rounded tcn.em
+differs from both neighbors) had `cf.em` below threshold (0.15) -- correct
+when the chromosome's only evidence *is* that weak segment, but wrong when a
+real, well-supported chain survives around it. GI NET's C016-T02-IM7 chr3
+(`2,1,4,1,4,1,2,1,2`) is real chromothripsis per manual review despite one bad
+`tcn=4` pair, and v1 wholesale-vetoes it anyway. v2 fixes this: treat the
+unreliable spike as a **break** in the segment sequence (not a whole-chromosome
+veto) -- excise it, recompute the longest surviving `<=k`-distinct-state chain
+on each side, and only drop the chromosome if the **best surviving chain** is
+below `min_chain` (default 4, matching `apply_classifier_v7`'s own
+`min_osc_chain`). This keeps GI NET chr3 (surviving chain lands at exactly 4)
+while still dropping chromosomes whose only evidence is the weak segment
+itself (C002-T01-IM5 chr11: surviving chain drops to 3, correctly cut).
+
+Validated on the **carcinoid calibration cohort** against corrected ground
+truth (two chromosomes originally believed weak turned out, on closer
+domain-expert review with cross-sibling corroboration, to be real): of 73
+conventional-pathway nominated rows, v2 at `min_chain=4` drops only
+C002-T01-IM5 chr11 (solid confirmed-fake) and correctly restores
+C017-T01-IM7 chr11 and C020-T01-IM7 chr16 (both now confirmed real).
+A third v1-vetoed row, C017-T02-IM7 chr7, remains genuinely
+borderline/unresolved either way. Chromosome-level: carcinoid 89 (raw v7) ->
+85 (v1) -> 88 (v2). **Sample-level is identical between v1 and v2 (53/238
+either way)** -- v2 is a strict chromosome-level accuracy improvement with no
+sample-level cost on the calibration cohort. Also re-run (2026-08-22) on the
+other 4 cohorts: classical SCLC 227/679 -> 226/679, pancreatic NET/NEC
+81/506 -> 80/506, GI NET 37/245 -> 37/245 (no change), aSCLC 14/25 -> 14/25 (no
+change) -- v2's chromosome-level effect there is much smaller than v1's was,
+since v2 only removes chromosomes whose *entire* surviving evidence is below
+`min_chain`, not merely whose weakest single segment is unreliable.
 
 The loss-dominant/shard pathway (`loss_dominant_shard_hit`) is deliberately
 excluded from this filter -- it has its own noise/deficit logic already, and
-was empirically untouched by this check at every threshold tested (0/40 shard
-calls caught at threshold=0.15 in classical SCLC; carcinoid's own shard hits
-sit at `cf.em` >= 0.117), consistent with those calls legitimately producing
-small, thin segments this metric would otherwise misread as unreliable.
-
-Validated against manual domain-expert review on the **carcinoid calibration
-cohort itself**, not just classical SCLC: at the default threshold (0.15), it
-catches exactly the 4 carcinoid calls confirmed weak/artifactual on review,
-while sparing the confirmed-real case above. Sample-level impact: carcinoid
-54/238 (22.7%) -> 53/238 (22.3%); classical SCLC 227/679 (33.4%) -> 220/679
-(32.4%). Not yet checked against pancnet/ginet/aSCLC -- re-validate before
-trusting the default threshold there.
+was empirically untouched by v1 at every threshold tested (carcinoid's own
+shard hits sit at `cf.em` >= 0.117), consistent with those calls legitimately
+producing small, thin segments this metric would otherwise misread as
+unreliable.
 
 ```python
 import ctx_features as cf
@@ -104,7 +117,81 @@ filtered = cf.apply_thin_chain_filter(v7, man_df, tablesDir)   # v7 = apply_clas
 Or via the shared driver script:
 
 ```bash
-python ctx_run_common/phase5_thin_chain_filter.py --manifest <path> --out <cohort_dir> [--v7-file ...] [--threshold 0.15]
+python ctx_run_common/phase5_thin_chain_filter.py --manifest <path> --out <cohort_dir> [--v7-file ...] [--min-chain 4]
+```
+
+## Loss-segment filter (`ctx_features.apply_loss_segment_filter`)
+
+Second post-hoc filter, applied **after** the thin-chain filter above.
+Manual review of 15 randomly-selected classical-SCLC/pancreatic-NET/GI-NET
+chromosomes that survive v7 + the thin-chain filter but carry only 2 "loss
+segments" (see below) found them well-supported (no noise concerns) but
+qualitatively simple -- almost always a single broad-arm loss, sometimes on
+each arm, not the fragmented multi-breakpoint pattern that characterizes real
+chromothripsis. Domain-expert judgment: on sparse panel data, where segment
+size is an unreliable proxy for genomic extent, it's hard to justify 2 loss
+segments as chromothripsis.
+
+A raw FACETS segment counts as a "loss segment" if `round(tcn.em)==1` **or**
+`round(lcn.em)==0` -- complete LOH at any total copy number, not just haploid
+loss (catches copy-neutral/amplified LOH too). Adjacent raw segments that are
+both loss-flagged merge into one block regardless of which condition
+triggered each or whether their exact tcn/lcn differ. **Deliberately has no
+`cf.em` reliability gate** -- tested filtering unreliable segments out before
+merging and rejected it: the "unreliable" divider segments sitting between
+confirmed-real loss blocks (C009-T01-IM6 chr1, C017-T01-IM7 chr11,
+C020-T01-IM7 chr16) are real, qualitatively distinct amplified/retained
+islands (often the exact same `cf.em` value recurring at multiple genomic
+locations -- one uncertain clonal cluster, not noise), and filtering them out
+before merging would fuse separate loss events together and erase the most
+diagnostic feature in all three cases.
+
+`apply_loss_segment_filter(cohort_df, man_df, min_loss_segments=3)` keeps a
+currently-nominated, non-shard chromosome only if **either**
+`n_loss_segments >= min_loss_segments` **or** the row independently qualifies
+for the same WGD-masked allelic rescue `apply_classifier_v7` already uses
+(`frac_loh < v7_allelic_alt_frac_loh_max` and
+`n_allelic_state_changes >= v7_allelic_alt_lo`) -- a chromosome with real
+minor-allele complexity substituting for literal LOH (e.g. C007-T01-IM6
+chr11/chr12, chromothripsis arising after a genome-doubling event) should not
+be penalized for having zero loss segments by construction. Loss-dominant/
+shard-pathway calls are trusted unconditionally, same as the thin-chain
+filter. It deliberately does **not** search for chromosomes v7 never
+nominated at all -- a cohort-wide scan for such "hidden" chromosomes did
+surface some real-looking cases, but also produced far more noise-driven
+false leads from poorly-fit samples, so that kind of search is left as a
+manual-review exercise rather than baked into this filter.
+
+Validated (2026-08-22) on top of the v2 thin-chain filter, `min_loss_segments=3`:
+
+| Cohort | Chromosome-level | Sample-level |
+|---|---|---|
+| Carcinoid (calibration) | 88 -> 69 | 53/238 -> 46/238 (22.3% -> 19.3%) |
+| Classical SCLC | 376 -> 206 | 226/679 -> 143/679 (33.3% -> 21.1%) |
+| Pancreatic NET/NEC | 165 -> 103 | 80/506 -> 61/506 (15.8% -> 12.1%) |
+| GI NET | 68 -> 47 | 37/245 -> 32/245 (15.1% -> 13.1%) |
+| aSCLC | 25 -> 21 | 14/25 -> 12/25 (56.0% -> 48.0%) |
+
+Every carcinoid chromosome dropped sits at exactly 2 loss segments -- none at
+0 or 1. Spot-checked 5 random flipped samples each in classical SCLC,
+pancreatic NET/NEC, and GI NET and confirmed convincing: none looked noisy,
+all read as simple broad-arm loss rather than chromothripsis. On carcinoid,
+two of the flipped samples (C022-T02-IM7, C023-T01-IM7) are known
+to have a *different*, never-nominated-by-v7 chromosome that independently
+clears the bar on manual review (chr11 and chr8 respectively) -- this filter
+cannot find such rows by design (see above), so the true carcinoid count
+accounting for those two is 48/238, not 46/238.
+
+```python
+import ctx_features as cf
+final = cf.apply_loss_segment_filter(filtered, man_df)   # filtered = apply_thin_chain_filter output
+# use final["nominated_final"] / final["sample_flag_final"]
+```
+
+Or via the shared driver script:
+
+```bash
+python ctx_run_common/phase6_loss_segment_filter.py --manifest <path> --out <cohort_dir> [--v7-filtered-file ...] [--min-loss-segments 3]
 ```
 
 ## Installation (conda)
