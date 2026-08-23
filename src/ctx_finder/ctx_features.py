@@ -30,12 +30,22 @@ import pandas as pd
 # See compute_baseline_shard_features, "centromeric-shard artifact" filter.
 CENTROMERE_HG19_MB = {
     "1": (121.5, 128.9), "2": (92.3, 95.3), "3": (90.5, 93.5), "4": (49.7, 52.7),
-    "5": (46.5, 50.7), "6": (58.6, 61.6), "7": (58.1, 61.1), "8": (43.8, 46.8),
-    "9": (47.0, 65.0), "10": (39.8, 41.6), "11": (51.6, 55.8), "12": (35.5, 37.8),
+    "5": (46.5, 50.7), "6": (58.6, 61.6), "7": (58.1, 61.1), "8": (43.0, 46.8),
+    "9": (47.0, 65.0), "10": (39.8, 42.7), "11": (51.6, 55.8), "12": (35.5, 37.8),
     "13": (17.7, 19.0), "14": (17.1, 19.0), "15": (19.0, 20.7), "16": (36.6, 38.9),
     "17": (24.0, 26.5), "18": (15.4, 19.0), "19": (24.4, 28.6), "20": (26.4, 29.7),
     "21": (10.9, 14.3), "22": (12.9, 17.9), "23": (58.6, 61.6),
 }
+# chr8/chr10 widened 2026-08-24: a cross-cohort scan of every small (<=2Mb),
+# sparse-probe (<=30 marks) segment near each centromere found near-identical
+# recurring breakpoints just outside the original window on both --
+# chr10:42.38-42.60Mb in ~50+ unrelated samples across all 5 cohorts (the
+# original window ended at 41.6Mb, missing it -- ironically this exact
+# coordinate was already noted as suspicious in the comment above when the
+# filter was first written, just not actually covered by the dict value used)
+# and chr8:43.09-43.10Mb in 8 samples (original window started at 43.8Mb).
+# chr4 and chr16 candidates raised in the same review did NOT show this
+# tight cross-sample recurrence and were deliberately left unchanged.
 
 
 # ----------------------------------------------------------------------
