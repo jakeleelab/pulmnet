@@ -236,7 +236,10 @@ C003-T01-IM5 (chr10), C008-T01-IM6 (chr11), C011-T01-IM6
 (chr3), and C022-T02-IM7 (chr11) -- the last of these is the same
 chr11 exception noted in the loss-segment filter section above as a known,
 previously-manual-only rescue; it is now found automatically and no manual
-override is needed for it.
+override is needed for it. (C011-T01-IM6's chr3 was subsequently found
+to be a centromeric-shard artifact -- see next section -- and no longer
+contributes to this sample's nomination; the patient stays chromothripsis
+positive via a second, unrelated sample. Current carcinoid count: 49/238.)
 
 Also re-run (2026-08-22), with the shipped `5x` default, on the other 4
 cohorts, but **not yet spot-checked** against real segment data the way the
@@ -251,6 +254,58 @@ validated the way it was on carcinoid.
 ```python
 import ctx_features as cf
 shard_df = cf.compute_baseline_shard_features(seg_df, ploidy)   # per-sample; shard_baseline_mult=5.0 default
+```
+
+## Centromeric-shard artifact filter (`CENTROMERE_HG19_MB`, `compute_baseline_shard_features`)
+
+Manual review (2026-08-22) of loss-dominant/shard-pathway hits found a
+recurring artifact distinct from the small-fragment cases above: a single
+"shard" that is actually the one FACETS segment spanning the low-mappability
+pericentromeric region -- a probe-count cliff (5-40 markers) against the
+confidently-called flanking arms (hundreds), not a real amplified fragment.
+Example, C011-T01-IM6 chr3: p-arm 1.45-89.5 Mb (tcn=1, 697 markers),
+then one segment 89.5-116.5 Mb (tcn=5, only 39 markers, straddling the
+centromere), then q-arm 118.6-197.4 Mb (tcn=1, 673 markers) -- the "shard"
+is the low-confidence middle segment, not a real fragment.
+
+A candidate shard is now rejected if its genomic range overlaps
+`CENTROMERE_HG19_MB` for its chromosome (an approximate hg19
+centromere-plus-immediate-pericentromeric-heterochromatin table). Rejecting
+only the centromeric candidate, rather than vetoing the whole chromosome,
+correctly leaves a genuine second shard on the same chromosome untouched.
+
+The pattern is rare in carcinoid but common in the other cohorts, and the
+same few pericentromeric coordinates recur across unrelated patients (GI
+NET: all 4 hits at chr18 ~14-19 Mb; pancreatic NET/NEC: chr10 ~39-42.6 Mb
+x5, chr2 ~92.3 Mb x3) -- recurrence at identical coordinates across
+unrelated patients is what makes this a panel/assay artifact rather than
+scattered noise, unlike the small-fragment false positives above.
+
+Validated (2026-08-22) across all 5 cohorts -- "removed" counts the
+`loss_dominant_shard_hit` rows rejected by the centromere check; sample-
+and patient-level flips are the net effect after re-running the full
+downstream pipeline (a chromosome can still end up `nominated_final` via
+an independent pathway or a real shard on the same chromosome, as happened
+for pancreatic NET/NEC below):
+
+| Cohort | Loss-dominant hits (before) | Centromeric (removed) | Sample flips | Patient flips | Final count |
+|---|---|---|---|---|---|
+| Carcinoid | 34 | 3 | 1 | 0 | 50/238 -> 49/238 |
+| Classical SCLC | 71 | 7 | 3 | 3 | 152/679 -> 149/679 |
+| GI NET | 15 | 4 | 2 | 2 | 33/245 -> 31/245 |
+| Pancreatic NET/NEC | 56 | 13 | 0 | 0 | 66/506 -> 66/506 |
+| aSCLC | 6 | 0 | 0 | 0 | 12/25 -> 12/25 |
+
+Pancreatic NET/NEC's 10 final-positive artifact rows caused zero flips: 9
+were on samples that already had another, unrelated real final chromosome,
+and the 10th (C018-T01-IM7 chr18) still nominates on its own merits
+through the conventional oscillation pathway once the shard-pathway hit is
+removed -- the classifier correctly falls back rather than losing the call.
+
+```python
+import ctx_features as cf
+cf.CENTROMERE_HG19_MB            # {"1": (121.5, 128.9), ...} -- override via
+shard_df = cf.compute_baseline_shard_features(seg_df, ploidy, centromere_mb=...)  # centromere_mb kwarg if needed
 ```
 
 ## Installation (conda)

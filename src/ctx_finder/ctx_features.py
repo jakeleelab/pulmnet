@@ -23,6 +23,21 @@ import numpy as np
 import pandas as pd
 
 
+# hg19 centromere + immediate pericentromeric-heterochromatin region, Mb.
+# Approximate (UCSC cytoBand/gap track order of magnitude, generously padded
+# on the flanks) -- used only to reject candidate "shards" that fall in this
+# low-mappability, probe-desert zone, not for any coordinate-precise purpose.
+# See compute_baseline_shard_features, "centromeric-shard artifact" filter.
+CENTROMERE_HG19_MB = {
+    "1": (121.5, 128.9), "2": (92.3, 95.3), "3": (90.5, 93.5), "4": (49.7, 52.7),
+    "5": (46.5, 50.7), "6": (58.6, 61.6), "7": (58.1, 61.1), "8": (43.8, 46.8),
+    "9": (47.0, 65.0), "10": (39.8, 41.6), "11": (51.6, 55.8), "12": (35.5, 37.8),
+    "13": (17.7, 19.0), "14": (17.1, 19.0), "15": (19.0, 20.7), "16": (36.6, 38.9),
+    "17": (24.0, 26.5), "18": (15.4, 19.0), "19": (24.4, 28.6), "20": (26.4, 29.7),
+    "21": (10.9, 14.3), "22": (12.9, 17.9), "23": (58.6, 61.6),
+}
+
+
 # ----------------------------------------------------------------------
 # small helpers
 # ----------------------------------------------------------------------
@@ -1069,7 +1084,8 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
                                     deficit_min=0.5,
                                     baseline_frac_min=0.5,
                                     small_frac_max=0.15,
-                                    tcn_col="tcn.em"):
+                                    tcn_col="tcn.em",
+                                    centromere_mb=CENTROMERE_HG19_MB):
     """
     Per-chromosome "loss-dominant baseline + retained/amplified shard" features.
 
@@ -1096,6 +1112,22 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
     21kb baseline-relative "shard" flanked by an unrelated gain segment
     rather than loss), while costing only 2 already-otherwise-positive
     chromosome-edge cases out of the prior production hit set.
+
+    A candidate is also rejected if it overlaps CENTROMERE_HG19_MB for its
+    chromosome. Manual review (2026-08-22) found a recurring artifact: a
+    single "shard" that is actually the one segment FACETS emits spanning
+    the low-mappability pericentromeric region, with a probe-count cliff
+    (5-40 markers) vs. the confidently-called flanking arms (hundreds) --
+    not a real amplified fragment. Rare in carcinoid (3/34 loss-dominant
+    hits, 1 costing a final call) but frequent in GI NET (4/15, all four
+    the same chr18 coordinates across unrelated patients) and pancreatic
+    NET/NEC (13/56, clustered at a handful of recurring pericentromeric
+    coordinates e.g. chr10 ~39-42.6 Mb, chr2 ~92.3 Mb) -- the coordinate
+    recurrence across unrelated patients is what makes this a panel/assay
+    artifact rather than scattered noise. Filtering the centromeric
+    candidate out (rather than requiring ALL of a chromosome's shards to
+    be non-centromeric) correctly leaves genuine shards on the same
+    chromosome untouched when a sample has more than one.
 
     Returns one row per chromosome: baseline_cn (the length-weighted modal
     total-CN state), baseline_frac (how much of the chromosome that state
@@ -1141,10 +1173,19 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         shard_thr = shard_baseline_mult * max(baseline_cn, 1.0)
         candidate_mask = (g["_len_frac"] <= small_frac_max) & (g["_tcn"] >= shard_thr)
         candidate_idx = g.index[candidate_mask].tolist()
-        embedded_idx = [i for i in candidate_idx
+        n_shard_candidates = len(candidate_idx)
+
+        cen = centromere_mb.get(c)
+        if cen is not None:
+            cen_start_bp, cen_end_bp = cen[0] * 1e6, cen[1] * 1e6
+            non_centromeric_idx = [i for i in candidate_idx
+                                    if not (g.at[i, "_start"] < cen_end_bp and g.at[i, "_end"] > cen_start_bp)]
+        else:
+            non_centromeric_idx = candidate_idx
+
+        embedded_idx = [i for i in non_centromeric_idx
                          if is_baseline[:i].any() and is_baseline[i + 1:].any()]
         shards = g.loc[embedded_idx]
-        n_shard_candidates = len(candidate_idx)
         hit = (deficit >= deficit_min) and (baseline_frac >= baseline_frac_min) and (len(shards) >= 1)
 
         base_segs = g.loc[g["_tcn"] == baseline_cn]
