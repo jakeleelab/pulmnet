@@ -1065,7 +1065,7 @@ def apply_classifier_v6(cohort_df, purity_map, *, params=None,
 # ======================================================================
 
 def compute_baseline_shard_features(seg_df, ploidy, *,
-                                    shard_ploidy_mult=4.0,
+                                    shard_baseline_mult=5.0,
                                     deficit_min=0.5,
                                     baseline_frac_min=0.5,
                                     small_frac_max=0.15,
@@ -1082,9 +1082,25 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
     keeps the signal specific to real shattering rather than an ordinary
     whole-chromosome deletion, which has no such internal structure.
 
+    The shard threshold is relative to the chromosome's OWN loss-level
+    baseline_cn (floored at 1 to avoid a vacuous threshold when baseline_cn
+    is itself 0, e.g. a homozygous-deletion backdrop), not the sample's
+    genome-wide ploidy -- a low-ploidy sample can otherwise set an
+    unreachably high bar for a chromosome whose local backdrop is already
+    a deep loss. A shard also must be genomically EMBEDDED in the loss
+    backdrop (a baseline-state segment somewhere upstream AND somewhere
+    downstream of it), not merely small -- validated against the current
+    production hit set plus a set of new baseline-relative-only candidates:
+    requiring embedding recovered exactly the cases judged convincing on
+    manual segment review and rejected the ones judged unconvincing (e.g. a
+    21kb baseline-relative "shard" flanked by an unrelated gain segment
+    rather than loss), while costing only 2 already-otherwise-positive
+    chromosome-edge cases out of the prior production hit set.
+
     Returns one row per chromosome: baseline_cn (the length-weighted modal
     total-CN state), baseline_frac (how much of the chromosome that state
-    covers), deficit (ploidy - baseline_cn), n_shards, and the boolean
+    covers), deficit (ploidy - baseline_cn), n_shards (embedded shards only;
+    see n_shard_candidates for the pre-embedding count), and the boolean
     loss_dominant_shard_hit -- plus extent_start/extent_end/extent_length_mb/
     extent_frac: the genomic SPAN (first-to-last position) of the segments
     at the baseline state, as opposed to baseline_frac's total COVERAGE.
@@ -1111,7 +1127,8 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         chrom_span = (g["_end"].max() - g["_start"].min()) if len(g) else np.nan
         if g.empty or chrom_len <= 0 or pd.isna(ploidy):
             rows.append(dict(chrom=c, baseline_cn=np.nan, baseline_frac=np.nan,
-                              deficit=np.nan, n_shards=0, loss_dominant_shard_hit=False,
+                              deficit=np.nan, n_shards=0, n_shard_candidates=0,
+                              loss_dominant_shard_hit=False,
                               extent_start=np.nan, extent_end=np.nan,
                               extent_length_mb=np.nan, extent_frac=np.nan))
             continue
@@ -1119,9 +1136,15 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         baseline_cn = float(by_state.index[0])
         baseline_frac = float(by_state.iloc[0] / chrom_len)
         deficit = float(ploidy - baseline_cn)
-        g = g.assign(_len_frac=g["_len"] / chrom_len)
-        shard_thr = shard_ploidy_mult * ploidy
-        shards = g[(g["_len_frac"] <= small_frac_max) & (g["_tcn"] >= shard_thr)]
+        g = g.assign(_len_frac=g["_len"] / chrom_len).sort_values("_start").reset_index(drop=True)
+        is_baseline = np.isclose(g["_tcn"].values, baseline_cn)
+        shard_thr = shard_baseline_mult * max(baseline_cn, 1.0)
+        candidate_mask = (g["_len_frac"] <= small_frac_max) & (g["_tcn"] >= shard_thr)
+        candidate_idx = g.index[candidate_mask].tolist()
+        embedded_idx = [i for i in candidate_idx
+                         if is_baseline[:i].any() and is_baseline[i + 1:].any()]
+        shards = g.loc[embedded_idx]
+        n_shard_candidates = len(candidate_idx)
         hit = (deficit >= deficit_min) and (baseline_frac >= baseline_frac_min) and (len(shards) >= 1)
 
         base_segs = g.loc[g["_tcn"] == baseline_cn]
@@ -1132,6 +1155,7 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
 
         rows.append(dict(chrom=c, baseline_cn=baseline_cn, baseline_frac=round(baseline_frac, 4),
                           deficit=round(deficit, 3), n_shards=int(len(shards)),
+                          n_shard_candidates=n_shard_candidates,
                           loss_dominant_shard_hit=bool(hit),
                           extent_start=extent_start, extent_end=extent_end,
                           extent_length_mb=round(extent_length_mb, 2),

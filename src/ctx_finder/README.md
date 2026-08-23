@@ -194,6 +194,65 @@ Or via the shared driver script:
 python ctx_run_common/phase6_loss_segment_filter.py --manifest <path> --out <cohort_dir> [--v7-filtered-file ...] [--min-loss-segments 3]
 ```
 
+## Shard threshold: baseline-relative + embedded-in-loss (`compute_baseline_shard_features`)
+
+The loss-dominant/shard pathway originally required a surviving fragment
+("shard") to clear `4x` the sample's genome-wide **ploidy**. On a low-ploidy
+sample, that sets an unreachably high bar for a chromosome whose local
+backdrop is already a deep loss well below ploidy -- so the threshold is now
+relative to the chromosome's own loss-level `baseline_cn` instead (floored at
+1 to avoid a vacuous `0x` threshold when `baseline_cn` is itself 0, e.g. a
+homozygous-deletion backdrop): `shard_thr = shard_baseline_mult * max(baseline_cn, 1)`.
+
+Lowering the anchor this way surfaces far more candidates, most of them not
+real shards -- e.g. C002-T01-IM5 chr6, a 21kb-scale segment that only
+cleared the new threshold because the chromosome's own baseline was low, but
+which sits next to an unrelated *gain* segment rather than loss on one side.
+A real shard, on manual review, is not just small -- it's genomically
+**embedded** in the loss backdrop: a baseline-state segment exists somewhere
+upstream of it AND somewhere downstream of it (not necessarily the immediate
+neighbor -- that stricter version was tested and rejected: it also vetoed 15
+of the then-33 production shard hits, including unambiguous ones like a
+tcn=52 shard, purely because the immediate neighboring segment happened to be
+a different elevated state rather than exactly the baseline). Requiring
+embedding independently recovered every manual by-eye judgment call made
+during review, without needing to also pick a specific multiplier -- `4x` and
+`5x` land on the identical hit set once embedding is required. `5x` was kept
+as the default (a small margin of safety over the original `4x`, since the
+two are equivalent on the calibration cohort).
+
+Validated (2026-08-22) against the carcinoid calibration cohort, using the
+production ploidy-based-threshold hit set (pre-embedding) as ground truth:
+
+| | Chromosome-level | Sample-level |
+|---|---|---|
+| Production (ploidy-based threshold, no embedding) | 16 | 14 |
+| + embedding required (still ploidy-based threshold) | 14 (-2, both already-positive chromosome-edge cases) | 14 (no change) |
+| Baseline-relative threshold + embedding (`4x` or `5x` -- identical) | 23 | 21 |
+
+Net effect on the full carcinoid pipeline (on top of v2 thin-chain + the
+loss-segment filter): 46/238 -> 50/238. The 4 newly-nominated samples are
+C003-T01-IM5 (chr10), C008-T01-IM6 (chr11), C011-T01-IM6
+(chr3), and C022-T02-IM7 (chr11) -- the last of these is the same
+chr11 exception noted in the loss-segment filter section above as a known,
+previously-manual-only rescue; it is now found automatically and no manual
+override is needed for it.
+
+Also re-run (2026-08-22), with the shipped `5x` default, on the other 4
+cohorts, but **not yet spot-checked** against real segment data the way the
+loss-segment filter was -- treat these numbers as provisional: classical SCLC
+143/679 -> 152/679 (21.1% -> 22.4%), pancreatic NET/NEC 61/506 -> 66/506
+(12.1% -> 13.0%), GI NET 32/245 -> 33/245 (13.1% -> 13.5%), aSCLC 12/25 ->
+12/25 (no change). Unlike carcinoid, `4x` and `5x` are NOT identical in these
+other cohorts -- `4x` gives slightly higher counts (167/679, 71/506, 36/245)
+-- so the choice of `5x` does matter here and has not been separately
+validated the way it was on carcinoid.
+
+```python
+import ctx_features as cf
+shard_df = cf.compute_baseline_shard_features(seg_df, ploidy)   # per-sample; shard_baseline_mult=5.0 default
+```
+
 ## Installation (conda)
 
 ```bash
