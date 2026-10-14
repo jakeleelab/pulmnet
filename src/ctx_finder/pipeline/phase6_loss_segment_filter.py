@@ -2,17 +2,15 @@
 Phase 6 (any cohort): loss-segment filter, then within-sample contrast filter, on top of
 nominated_v7_filtered (i.e. run AFTER phase5_thin_chain_filter.py).
 
-1. Loss-segment filter (LOCKED 2026-08-22): keep a conventional-pathway (non-shard) call
+1. Loss-segment filter: keep a conventional-pathway (non-shard) call
    only if the chromosome has >=min_loss_segments merged "loss" blocks (tcn.em==1 or
    lcn.em==0, no cf.em reliability gate -- see ctx_features._n_loss_segments docstring for
    why), OR the row independently qualifies for apply_classifier_v7's own WGD-masked allelic
    rescue (frac_loh<v7_allelic_alt_frac_loh_max AND n_allelic_state_changes>=v7_allelic_alt_lo).
-   min_loss_segments=3 was checked against manual domain-expert review (carcinoid full cohort
-   + random 5-sample spot-checks in classical SCLC, pancreatic NET/NEC, GI NET).
-2. Within-sample contrast filter (ADOPTED 2026-10-02, same rule for every cohort): keep an
+2. Within-sample contrast filter: keep an
    oscillation-pathway call only if the chromosome stands out from the same sample's other
    chromosomes (contrast_score >= min_contrast_score). See
-   ctx_features.apply_within_sample_contrast_filter and pulmnet/ctx_contrast_20260919/.
+   ctx_features.apply_within_sample_contrast_filter.
 Loss-dominant/shard-pathway calls are trusted unconditionally by both filters.
 
 Usage:
@@ -38,7 +36,7 @@ def main():
     ap.add_argument("--min-loss-segments", type=int, default=3)
     ap.add_argument("--min-contrast-score", type=float, default=2.0)
     ap.add_argument("--no-contrast-filter", action="store_true",
-                    help="skip the within-sample contrast filter (reproduces the pre-2026-10-02 output)")
+                    help="skip the within-sample contrast filter (apply the loss-segment filter only)")
     ap.add_argument("--result-suffix", default="",
                     help="optional suffix for the output filename, e.g. '.roster' -> cohort_chrom_features_final.roster.tsv")
     args = ap.parse_args()

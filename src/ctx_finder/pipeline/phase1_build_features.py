@@ -1,8 +1,7 @@
 """
 Phase 1 (any cohort): build per-chromosome cohort features + write the Slurm
-array script for the changepoint pass. Parameterized so one script serves
-every cohort (carcinoid, aSCLC, classical SCLC, pancreatic NET/NEC, GI NET, ...)
--- only --manifest/--out differ per run.
+array script for the changepoint pass. Only --manifest/--out differ between
+cohorts.
 
 Usage:
   python pipeline/phase1_build_features.py --manifest <path> --out <dir> [--pen 8] [--chunk 4]
