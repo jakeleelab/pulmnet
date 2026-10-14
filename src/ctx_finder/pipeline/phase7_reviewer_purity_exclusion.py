@@ -1,14 +1,9 @@
 """
-Phase 7 (any cohort): exclude samples whose FACETS purity was manually
-reviewer-injected -- both the purity-cval run and the hisens run failed to
-converge on their own, so a human set purity by hand (often via SNV VAF,
-a reasonable but sometimes inaccurate fallback for an overly flat CN
-profile). That's a systematic sign of a poor CN profile, so the sample's
-chromothripsis call is not trusted even though it's still fully processed
-and its raw features stay in the table. Run this AFTER phase6_loss_segment_filter.py.
-
-See the manifest's purity_source column (written by the R cohort-building
-scripts): "reviewer_override" is the flag this script acts on.
+Phase 7 (any cohort): clear calls in samples whose FACETS purity was set
+manually (manifest column purity_source == "reviewer_override"), which
+indicates that FACETS could not fit the profile on its own, and in samples
+listed in an optional manual QC file. Features stay in the table; only the
+calls are cleared. Run after phase6_loss_segment_filter.py.
 
 Usage:
   python pipeline/phase7_reviewer_purity_exclusion.py --manifest <path> --out <dir> [--final-file cohort_chrom_features_final.tsv] [--qc-file <path>] [--result-suffix .qc_adjusted]

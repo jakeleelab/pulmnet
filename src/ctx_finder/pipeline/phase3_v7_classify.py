@@ -1,6 +1,6 @@
 """
 Phase 3 (any cohort): loss-dominant-baseline/shard features, gated second-look
-confidence, then the v7 classifier (carcinoid-calibrated, applied unmodified).
+confidence, then the v7 classifier (fixed thresholds).
 
 Usage:
   python pipeline/phase3_v7_classify.py --manifest <path> --out <dir>

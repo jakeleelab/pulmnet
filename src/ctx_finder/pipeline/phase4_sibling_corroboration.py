@@ -1,7 +1,7 @@
 """
-Phase 4 (any cohort): sibling breakpoint-corroboration check, restricted to
-the cohort's canonical roster (see feedback: always filter to roster before
-cross-sample analysis -- the manifest/processed pool can be broader).
+Phase 4 (any cohort): sibling breakpoint-corroboration report, restricted to
+the samples listed in --roster (the processed pool can be broader than the
+cohort of interest). Informational only; does not change any call.
 
 Usage:
   python pipeline/phase4_sibling_corroboration.py --manifest <path> --out <dir> --roster <path> [--roster-id-col SAMPLE_ID]

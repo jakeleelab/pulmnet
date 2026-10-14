@@ -1,14 +1,10 @@
 """
 Phase 5 (any cohort): thin-chain reliability filter on top of nominated_v7.
 
-v2 (2026-08-22): treats an unreliable oscillation-chain segment (cf.em below
-threshold) as a BREAK in the segment sequence and rechecks whether the best
-surviving chain still clears min_chain, rather than v1's all-or-nothing veto
-of the whole chromosome. See ctx_features.apply_thin_chain_filter docstring
-and the ctx_finder README ("Thin-chain reliability filter") for the full
-v1-vs-v2 validation narrative -- min_chain=4 (matching apply_classifier_v7's
-own min_osc_chain) was checked against manual domain-expert review on the
-carcinoid calibration cohort before superseding v1's threshold=0.15 veto.
+Treats an unreliable oscillation-chain segment (cf.em below threshold) as a
+break in the segment sequence and keeps the call only if the best surviving
+chain still has at least min_chain segments (default 4, matching
+apply_classifier_v7's min_osc_chain). See ctx_features.apply_thin_chain_filter.
 
 Usage:
   python pipeline/phase5_thin_chain_filter.py --manifest <path> --out <dir> [--v7-file cohort_chrom_features_v7.tsv] [--min-chain 4]

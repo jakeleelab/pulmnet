@@ -12,19 +12,13 @@ fixed positions of the IMPACT panel's probes, so a real, shared structural
 event reproduces breakpoints at (near-)identical positions across independent
 samples from the same tumor, while unrelated samples show no such relationship.
 For each discordant (patient, chrom, flagged_sample, unflagged_sample) pair,
-we compute what fraction of the flagged sample's breakpoints have a matching
+the check computes what fraction of the flagged sample's breakpoints have a matching
 breakpoint (within `tol` bp) in the unflagged sample, then compare that match
 fraction against an empirical null built from every OTHER sample in the cohort
 on that same chromosome. A high percentile is quantitative support for a real,
 shared-but-missed event; a percentile near 0 means the "missed" sample likely
 just doesn't carry the event (a genuine negative, not a detection failure).
-
-Validated against carcinoid cases the domain expert had already manually
-reviewed: known-corroborating sibling pairs (C005, C010 T01/T03)
-scored 100th percentile; a known-non-matching pair (C024) scored 0th;
-a case judged only "supporting evidence" (C011) scored a middle 84.7th
-percentile with thin absolute overlap -- the metric's confidence tracked the
-domain expert's own stated confidence in each case.
+The report is informational and does not change any call.
 """
 import numpy as np
 import pandas as pd

@@ -1,22 +1,13 @@
 """
-Chromosome-level features and evaluation for chromothripsis-footprint detection
-on sparse FACETS (targeted-panel) data.
+Chromosome-level features, classifiers and post-hoc filters for chromothripsis
+detection on sparse FACETS (targeted-panel) copy-number data.
 
-Designed to plug into the explore_cases notebook. It consumes the same objects
-you already build:
+Inputs per sample:
 
-    seg_df       : per-sample cncf table (one sample), columns include
-                   chrom, loc.start, loc.end, num.mark, cnlr.median, mafR,
-                   tcn.em, lcn.em, seg
-    jointseg_df  : per-sample probe-level table (one sample), columns include
-                   chrom, maploc, cnlr, lorvar, vafT, het, seg
-                   (tcn_estimate is added by your add_tcn_estimate())
-
-Naming of derived chromosome-level columns is kept distinct from your existing
-cohort_df columns so you can merge and compare side by side.
-
-NOTE: written to match the column names seen in the notebook but NOT yet run
-against the real data -- sanity check column presence on first use.
+    seg_df       : FACETS segment table (cncf); columns include chrom, loc.start,
+                   loc.end, num.mark, cnlr.median, mafR, tcn.em, lcn.em, cf.em, seg
+    jointseg_df  : FACETS probe-level table; columns include chrom, maploc, cnlr,
+                   lorvar, vafT, het, seg (tcn_estimate is added internally)
 """
 
 import numpy as np
@@ -36,16 +27,9 @@ CENTROMERE_HG19_MB = {
     "17": (24.0, 26.5), "18": (15.4, 19.0), "19": (24.4, 28.6), "20": (26.4, 29.7),
     "21": (10.9, 14.3), "22": (12.9, 17.9), "23": (58.6, 61.6),
 }
-# chr8/chr10 widened 2026-08-24: a cross-cohort scan of every small (<=2Mb),
-# sparse-probe (<=30 marks) segment near each centromere found near-identical
-# recurring breakpoints just outside the original window on both --
-# chr10:42.38-42.60Mb in ~50+ unrelated samples across all 5 cohorts (the
-# original window ended at 41.6Mb, missing it -- ironically this exact
-# coordinate was already noted as suspicious in the comment above when the
-# filter was first written, just not actually covered by the dict value used)
-# and chr8:43.09-43.10Mb in 8 samples (original window started at 43.8Mb).
-# chr4 and chr16 candidates raised in the same review did NOT show this
-# tight cross-sample recurrence and were deliberately left unchanged.
+# The chr8 and chr10 windows extend slightly beyond the centromere to cover small,
+# sparse-probe segments (chr8:43.09-43.10 Mb, chr10:42.38-42.60 Mb) that recur at
+# identical coordinates across unrelated samples, i.e. a panel artifact.
 
 
 # ----------------------------------------------------------------------
@@ -359,13 +343,8 @@ def _chain_restricted_min_cfem_spike(seg_chrom, tcn_col="tcn.em", chain_k=3):
     matters: a chromosome can carry one weak, low-confidence segment alongside many
     other strong, well-supported oscillating segments elsewhere -- vetoing the whole
     chromosome for its single weakest link anywhere would wrongly kill real, dramatic
-    chromothripsis calls. Confirmed case: C009-T01-IM6 chr1 (carcinoid) has
-    ~15 segments with huge, well-supported cnlr swings (up to 2.6) plus one
-    low-cf.em segment outside the actual oscillation chain; a chromosome-wide
-    version of this check wrongly vetoed it (min_cfem=0.135), while restricting to
-    the chain window correctly clears it (0.195, chain doesn't include the weak
-    segment). By contrast C002-T01-IM5 chr11's only evidence *is* the weak
-    spike, and it stays vetoed under either version (0.135).
+    chromothripsis calls. A chromosome whose only evidence is the weak spike is
+    still flagged.
 
     Returns (min_cfem, n_spikes_used); min_cfem is NaN if no scoreable spike exists
     inside the chain window -- callers should treat NaN as "no evidence against
@@ -1052,19 +1031,13 @@ def apply_classifier_v6(cohort_df, purity_map, *, params=None,
 
 
 # ======================================================================
-# v7: manual-review-calibrated update
+# v7 classifier
 # ----------------------------------------------------------------------
-# Tuned against a 206-patient roster with pathologist-consensus chromothripsis
-# calls (pulmnet.version2.brief) rather than picked a priori like v3/v5/v6.
-# Four changes on top of v6, each validated to add true positives with zero
-# or minimal added false positives on that roster:
+# Thresholds calibrated against expert-reviewed chromothripsis calls.
+# Changes relative to v6:
 #
-#   1. min_osc_chain 5 -> 4.  One segment of headroom recovers real calls
-#      that clear every other bar; costs nothing (no roster negative sits at
-#      chain==4).
-#   2. noise_max 1.135 -> 1.0.  Tighter probe-noise ceiling; trades one
-#      borderline-on-every-axis true positive for two clearly-noisy false
-#      positives (net PPV/specificity gain).
+#   1. min_osc_chain 5 -> 4.
+#   2. noise_max 1.135 -> 1.0 (tighter probe-noise ceiling).
 #   3. An alternate allelic-evidence path (see F_allelic_v7 below) and a
 #      parallel loss-dominant-baseline pathway (see
 #      compute_baseline_shard_features) for chromothripsis patterns the v6
@@ -1080,13 +1053,8 @@ def apply_classifier_v6(cohort_df, purity_map, *, params=None,
 #      same stiffness can zero out a chromosome with a maximal FACETS-level
 #      mechanistic score (ctx_score>=0.8) whose real, well-separated jumps
 #      still don't individually clear the fixed per-breakpoint cost. For
-#      that narrow case only, re-check at pen_const=5.0 (one calibration
-#      step gentler, not a return to the uncalibrated default) and use it
-#      if higher. Gated tightly enough (ctx_score>=0.8 AND
-#      cp_osc_confidence==0) that it fires on exactly 2 chromosomes in the
-#      full 296-sample cohort -- one is C012 chr15 (recovers the
-#      cohort's last false negative), the other is independently vetoed by
-#      the noise gate regardless. Zero added false positives.
+#      that narrow case only (ctx_score >= 0.8 AND cp_osc_confidence == 0),
+#      re-check at pen_const=5.0 and use it if higher.
 # ======================================================================
 
 def compute_baseline_shard_features(seg_df, ploidy, *,
@@ -1116,41 +1084,26 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
     unreachably high bar for a chromosome whose local backdrop is already
     a deep loss. A shard also must be genomically EMBEDDED in the loss
     backdrop (a baseline-state segment somewhere upstream AND somewhere
-    downstream of it), not merely small -- validated against the current
-    production hit set plus a set of new baseline-relative-only candidates:
-    requiring embedding recovered exactly the cases judged convincing on
-    manual segment review and rejected the ones judged unconvincing (e.g. a
-    21kb baseline-relative "shard" flanked by an unrelated gain segment
-    rather than loss), while costing only 2 already-otherwise-positive
-    chromosome-edge cases out of the prior production hit set.
+    downstream of it), not merely small; a small high segment flanked by an
+    unrelated gain rather than the loss backdrop is not a shard.
 
     A candidate is also rejected if it overlaps CENTROMERE_HG19_MB for its
-    chromosome. Manual review (2026-08-22) found a recurring artifact: a
-    single "shard" that is actually the one segment FACETS emits spanning
-    the low-mappability pericentromeric region, with a probe-count cliff
-    (5-40 markers) vs. the confidently-called flanking arms (hundreds) --
-    not a real amplified fragment. Rare in carcinoid (3/34 loss-dominant
-    hits, 1 costing a final call) but frequent in GI NET (4/15, all four
-    the same chr18 coordinates across unrelated patients) and pancreatic
-    NET/NEC (13/56, clustered at a handful of recurring pericentromeric
-    coordinates e.g. chr10 ~39-42.6 Mb, chr2 ~92.3 Mb) -- the coordinate
-    recurrence across unrelated patients is what makes this a panel/assay
-    artifact rather than scattered noise. Filtering the centromeric
-    candidate out (rather than requiring ALL of a chromosome's shards to
-    be non-centromeric) correctly leaves genuine shards on the same
-    chromosome untouched when a sample has more than one.
+    chromosome: FACETS often emits a single sparse-probe segment spanning the
+    low-mappability pericentromeric region, which recurs at the same
+    coordinates across unrelated samples and is a panel artifact rather than
+    an amplified fragment. Only the centromeric candidate is removed, so
+    genuine shards elsewhere on the same chromosome are unaffected.
 
-    Multi-shard oscillation (ADOPTED 2026-10-03, all cohorts): when a chromosome
+    Multi-shard oscillation: when a chromosome
     carries >= multi_shard_min embedded shards, the baseline -> shard -> baseline
     -> shard -> baseline alternation is itself an oscillation between two states,
     so the loss-dominance requirements (deficit_min, baseline_frac_min) are waived.
     Every shard requirement still applies (>= shard_baseline_mult x baseline,
     <= small_frac_max of the chromosome, embedded, non-centromeric), as does the
     v7 noise veto downstream. A single shard keeps the original loss-dominant
-    criteria. Motivated by expert review of pancreatic/GI NET misses whose
-    shattered chromosome sits on a copy-neutral or gained backdrop with several
-    high-level fragments (C006-T01 chr6, C019-T02 chr6,
-    C015-T01 chr12). Pass multi_shard_min=None to disable.
+    criteria. This captures shattered chromosomes on a copy-neutral or gained
+    backdrop that carry several high-level fragments. Pass multi_shard_min=None
+    to disable.
 
     Returns one row per chromosome: baseline_cn (the length-weighted modal
     total-CN state), baseline_frac (how much of the chromosome that state
@@ -1244,12 +1197,12 @@ def compute_second_look_confidence(cohort_df, man_df, tablesDir, *,
     """
     Gated re-check of cp_osc_confidence at a gentler penalty for chromosomes
     the anti-flood pen_const=8.0 probe recheck zeroed out despite a strong
-    FACETS-level mechanistic score. See v7 module docstring, change 4.
+    FACETS-level mechanistic score. See the v7 comment block, change 4.
 
     `cohort_df` must already carry `score_col` (i.e. call after
-    compute_ctx_score / apply_classifier_v6). Only recomputes for rows
-    matching the gate -- validated to be 2 rows in the full cohort, so this
-    is cheap even though it re-reads cached jointseg TSVs from `tablesDir`.
+    compute_ctx_score / apply_classifier_v6). Only rows matching the gate are
+    recomputed (typically very few), re-reading cached jointseg TSVs from
+    `tablesDir`.
 
     Returns a DataFrame with columns [sample_col, chrom_col,
     "cp_osc_confidence_v7"] -- the gentler-penalty confidence, ready to
@@ -1332,8 +1285,7 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     # changing state repeatedly (n_allelic_state_changes), i.e. real allelic
     # complexity that never crosses to literal zero. Gated tightly (ramp
     # starts at 8 transitions, not the 1 used for the ordinary LOH<->het
-    # interleave) so it doesn't just reproduce blanket F_allelic removal --
-    # validated to add zero false positives on the roster at this setting.
+    # interleave) so it doesn't just reproduce blanket F_allelic removal.
     p = params or ScoreParams()
     interleave_ramp = _ramp(pd.to_numeric(d["loh_het_interleave"], errors="coerce").fillna(0),
                             p.allelic_lo, p.allelic_hi)
@@ -1380,9 +1332,7 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     # ---- parallel loss-dominant-baseline pathway ----
     # shard_df hits already carry their own noise/deficit/footprint logic
     # (see compute_baseline_shard_features); still gate on the SAME noise
-    # ceiling as the main pathway, since that's what separated the real
-    # rescues from the "horribly noisy library" false positives on the
-    # roster (dot_mad_within<=1.0 cleanly split both).
+    # ceiling as the main pathway, which rejects calls from noisy libraries.
     sd = shard_df[[sample_col, chrom_col, "loss_dominant_shard_hit"]].copy()
     sd[chrom_col] = sd[chrom_col].astype(str)
     d[chrom_col] = d[chrom_col].astype(str)
@@ -1462,58 +1412,27 @@ def apply_thin_chain_filter(cohort_df, man_df, tablesDir, *,
                             chrom_col="chrom"):
     """
     Post-hoc reliability check on top of `apply_classifier_v7`'s `nominated_v7`
-    calls -- see README, "Thin-chain reliability filter", for the full
-    narrative. This is v2 (LOCKED 2026-08-22), which supersedes and replaces
-    v1 (all-or-nothing veto on the chromosome's weakest chain segment).
+    calls.
 
-    Motivation (unchanged from v1): manual review of classical-SCLC false
-    positives found the oscillating tcn.em labels were sometimes carried by a
-    single thin segment with an unreliable FACETS cellular-fraction estimate
-    (`cf.em`), sandwiched between two ordinary segments -- not a real
-    recurring event. Segment size and het-SNP count (`nhet`) were tried first
-    and don't discriminate (real chromothripsis, including the loss-
-    dominant/shard pathway, legitimately produces small, low-nhet segments
-    too); `cf.em` on the specific segments forming the chain does.
+    An oscillation chain can be carried by a single thin "spike" segment whose
+    FACETS cellular-fraction estimate (`cf.em`) is unreliable, sandwiched
+    between two ordinary segments. Segment size and het-SNP count (`nhet`) do
+    not separate these from real events, because chromothripsis legitimately
+    produces small, low-nhet segments; `cf.em` of the segments forming the
+    chain does.
 
-    v1 vs v2: v1 found the actual oscillation-chain window first
-    (`longest_le_k_distinct_run_bounds`), then vetoed the ENTIRE chromosome if
-    any spike inside that window had cf.em below threshold -- correct when the
-    chromosome's only evidence is that one weak segment, but wrong when a real,
-    well-supported chain survives around it (GI NET's C016-T02-IM7 chr3,
-    `2,1,4,1,4,1,2,1,2`, is real chromothripsis per manual review despite one
-    bad `tcn=4` pair). v2 fixes this by treating the unreliable spike as a
-    BREAK (`_break_and_recompute_chain`) rather than a whole-chromosome veto:
-    excise it, recompute the longest surviving chain on each side, and only
-    fail the chromosome if the BEST surviving chain is below `min_chain`
-    (default 4, matching `apply_classifier_v7`'s own `min_osc_chain`). This
-    keeps GI NET chr3 (surviving chain = 4, right at the bar) while still
-    correctly dropping chromosomes whose only evidence is the weak segment
-    itself.
+    Within the oscillation-chain window (`longest_le_k_distinct_run_bounds`),
+    each spike with cf.em below `cfem_threshold` is treated as a break
+    (`_break_and_recompute_chain`): it is excised, the longest surviving chain
+    is recomputed on each side, and the call is dropped only if the best
+    surviving chain is shorter than `min_chain` (default 4, matching
+    `apply_classifier_v7`'s `min_osc_chain`). A well-supported chain around one
+    unreliable segment is therefore kept, while a chromosome whose only
+    evidence is the weak segment is dropped.
 
-    Only applies to the CONVENTIONAL (non-shard) pathway (`shard_col == False`)
-    -- shard-pathway calls have their own noise/deficit logic in
-    `compute_baseline_shard_features` and were empirically untouched by v1 at
-    every threshold tested (carcinoid's own shard hits sit at cf.em >= 0.117),
-    consistent with the working theory that shard/amplified-fragment
-    chromothripsis legitimately produces small, thin segments this metric
-    would otherwise misread as unreliable.
-
-    Validated (2026-08-22) on the carcinoid calibration cohort against the
-    CURRENT (corrected) ground truth -- of the 73 conventional-pathway
-    `nominated_v7` rows, v2 at min_chain=4 drops only 1
-    (C002-T01-IM5 chr11, the one case with solid confirmed-fake ground
-    truth) and correctly restores the 2 rows v1 had wrongly vetoed after
-    later domain-expert re-review found them real: C017-T01-IM7 chr11
-    (cross-sibling corroborated) and C020-T01-IM7 chr16 ("okay to keep").
-    A third v1-vetoed row, C017-T02-IM7 chr7, remains genuinely
-    borderline/unresolved either way. Chromosome-level: carcinoid 89 (raw v7)
-    -> 85 (v1) -> 88 (v2). Sample-level is IDENTICAL between v1 and v2 (53/238
-    either way) -- the 3 rescued rows all belong to samples already counted
-    positive via another nominated chromosome, so v2 is a strict
-    chromosome-level accuracy improvement with no sample-level cost. Not
-    re-validated against csclc/pancnet/ginet/aSCLC under v2 specifically (v1's
-    validation numbers there -- csclc 227/679->220/679 -- predate this
-    change and should be re-checked before being cited as current).
+    Applies only to the oscillation (non-shard) pathway (`shard_col == False`);
+    shard-pathway calls are expected to contain small, thin segments and are
+    exempt.
 
     Requires `man_df` to carry `facets_cncf_path` (reads segment tables via
     `run_ctx_pipeline.load_cncf` -- the raw per-sample cncf file, not the
@@ -1569,18 +1488,12 @@ def _n_loss_segments(seg_chrom, tcn_col="tcn.em", lcn_col="lcn.em"):
     copy number, not just haploid loss (catches copy-neutral/amplified LOH
     too). Adjacent raw segments that are both loss-flagged merge into one
     block regardless of which condition triggered each, or whether their
-    exact tcn/lcn differ -- consistent with the case-browser's loss-segment
-    visualization (see README, "Loss-segment filter").
+    exact tcn/lcn differ.
 
-    Deliberately has NO cf.em reliability gate. Tested filtering unreliable
-    segments out before merging (2026-08-22) and rejected it: the "unreliable"
-    divider segments sitting between confirmed-real loss blocks
-    (C009-T01-IM6 chr1, C017-T01-IM7 chr11, C020-T01-IM7 chr16)
-    are real, qualitatively distinct amplified/retained islands (often the
-    exact same cf.em value recurring at multiple genomic locations -- one
-    uncertain clonal cluster, not noise), not unreliable segmentation.
-    Filtering them out before merging would fuse separate loss events
-    together and erase the most diagnostic feature in all three cases.
+    There is deliberately no cf.em reliability gate: segments separating loss
+    blocks are often retained or amplified islands with an uncertain clonal
+    fraction, and removing them before merging would fuse separate loss
+    events.
     """
     s = _ordered_segments(seg_chrom)
     T = pd.to_numeric(s.get(tcn_col), errors="coerce")
@@ -1610,49 +1523,23 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
                               chrom_col="chrom"):
     """
     Second post-hoc filter, applied on top of `apply_thin_chain_filter`'s
-    output -- see README, "Loss-segment filter", for the full narrative.
-    LOCKED 2026-08-22.
+    output.
 
-    Motivation: manual review of 15 randomly-selected classical-SCLC/
-    pancreatic-NET/GI-NET chromosomes that survive v7 + the thin-chain filter
-    but carry only 2 loss segments (see `_n_loss_segments`) found them
-    convincing-looking (well-supported segments, no noise concerns) but
-    qualitatively simple -- almost always a single broad-arm loss (sometimes
-    on each arm), not the fragmented multi-breakpoint pattern that
-    characterizes real chromothripsis. Domain-expert judgment: "it is hard to
-    justify chromosomes with 2-loss segments as chromothripsis" on sparse
-    panel data, where segment size is an unreliable proxy for genomic extent.
+    Oscillation calls with fewer than three loss blocks (see
+    `_n_loss_segments`) typically reflect simple broad-arm losses rather than
+    the fragmented, multi-breakpoint pattern of chromothripsis; on sparse
+    panel data, segment size is an unreliable proxy for genomic extent.
 
     For each currently-nominated, non-shard (sample, chrom), keeps the call
     only if EITHER `n_loss_segments >= min_loss_segments` (default 3) OR the
     row independently qualifies for the SAME WGD-masked allelic rescue
     `apply_classifier_v7` already uses (`frac_loh < v7_allelic_alt_frac_loh_max`
     AND `n_allelic_state_changes >= v7_allelic_alt_lo`) -- a chromosome with
-    real minor-allele complexity substituting for literal LOH (e.g.
-    C007-T01-IM6 chr11/chr12, chromothripsis arising after a
-    genome-doubling event) should not be penalized for having zero loss
-    segments by construction. Loss-dominant/shard-pathway calls are trusted
-    unconditionally, same as the thin-chain filter.
-
-    Deliberately does NOT search for chromosomes v7 never nominated at all,
-    even though a cohort-wide scan for such "hidden" chromosomes did surface a
-    handful of real-looking cases (e.g. C014-T01-IM7 chr11, excluded only
-    by `weak_altered_footprint_v7`) -- that same scan also produced far more
-    noise-driven false leads (most of one bad-fit outlier's, C004's,
-    hits), so it isn't reliable enough to run unattended and is deliberately
-    left as a manual-review exercise rather than baked into this filter.
-
-    Validated (2026-08-22) on the carcinoid calibration cohort atop v2 of the
-    thin-chain filter: of 88 nominated_v7_filtered rows, drops 19 (all sitting
-    at exactly 2 loss segments -- none at 0 or 1), keeping 69. Sample-level:
-    53/238 -> 46/238 (7 samples flip; 2 of those 7 are known to have a
-    different, never-nominated-by-v7 chromosome that independently clears the
-    bar on manual review -- C022-T02-IM7 chr11, C023-T01-IM7 chr8 --
-    so the true count accounting for those is 48/238; this filter alone
-    cannot find such rows, by design, see above). Spot-checked 5 random flips
-    each in classical SCLC, pancreatic NET/NEC, and GI NET (2026-08-22) and
-    confirmed convincing: none looked like noise, all read as simple
-    broad-arm loss rather than chromothripsis.
+    real minor-allele complexity substituting for literal LOH (chromothripsis
+    after genome doubling) is not penalized for having no loss segments.
+    Loss-dominant/shard-pathway calls are exempt, as in the thin-chain filter.
+    The filter only removes calls; it does not add chromosomes that v7 did not
+    nominate.
 
     Returns `cohort_df` with new columns: `n_loss_segments`,
     `wgd_rescue_eligible`, `loss_segment_veto`, `nominated_final`,
@@ -1700,9 +1587,9 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
 
 # Features and fixed MAD floors for the within-sample contrast filter. The floors only stop a
 # zero MAD (most chromosomes of a sample sharing the same count) from blowing up the z-score:
-# one count step (1.4826 = MAD scale of a 1-unit spread) for the count features, and the
-# pooled median per-sample MAD of segments_per_probe (carcinoid + pancreatic NET + GI NET,
-# 2026-10-02). Fixed constants, so the filter never depends on which cohorts are loaded.
+# one count step (1.4826 = MAD scale of a 1-unit spread) for the count features, and a
+# pooled median per-sample MAD for segments_per_probe. They are fixed constants, so the
+# filter does not depend on which samples are analysed together.
 CONTRAST_FEATURE_FLOORS = {
     "cp_osc_chain": 1.4826,
     "cp_n_changepoints": 1.4826,
@@ -1750,27 +1637,17 @@ def apply_within_sample_contrast_filter(cohort_df, *, min_contrast_score=2.0,
                                         shard_col="loss_dominant_shard_hit",
                                         sample_col="SAMPLE_ID", chrom_col="chrom"):
     """
-    Third post-hoc filter, applied on top of `apply_loss_segment_filter`. ADOPTED 2026-10-02
-    for every cohort (carcinoid, aSCLC, classical SCLC, pancreatic NET, GI NET).
+    Third post-hoc filter, applied on top of `apply_loss_segment_filter`.
 
-    Motivation: manual review of the pancreatic NET calls against pathology sign-out CN
-    plots found many oscillation-pathway calls in noisy samples (CN jitter across the whole
-    genome) where the called chromosome "doesn't look different from the other chromosomes".
-    No sample-level noise metric separated these from real calls without also removing
-    reviewed carcinoid true positives, but the reviewer's own criterion -- does the
-    chromosome stand out from the rest of its sample -- did.
+    In samples with genome-wide copy-number jitter, oscillation features can be elevated on
+    every chromosome. A call is therefore kept only if the chromosome stands out from the
+    other chromosomes of the same sample, rather than relying on a sample-level noise cutoff.
 
     Keeps an oscillation-pathway call only if contrast_score >= min_contrast_score (see
     `compute_within_sample_contrast`; features cp_osc_chain, cp_n_changepoints,
     n_allelic_state_changes, longest_osc_chain_k3, n_altered_islands, segments_per_probe).
-    Loss-dominant/shard-pathway calls are exempt: oscillation features don't describe them
-    (e.g. real carcinoid shard call C001-T01 chr11 scores 0.45).
-
-    Validated 2026-10-02 (pulmnet/ctx_contrast_20260919/): carcinoid 48/48 positive samples
-    kept (only C017-T02 chr2/7/11/19 dropped; sample stays positive via its shards);
-    pancreatic NET reviewed calls: 21/22 endorsed samples kept (C013-T01 chr3, score
-    1.8, accepted loss), 7/23 noisy and 3/9 overcalled samples removed. Per-sample
-    2-cluster splitting was tested and rejected (lost 12/48 carcinoid positives).
+    Loss-dominant/shard-pathway calls are exempt, because oscillation features do not
+    describe them.
 
     Expects every chromosome row of each sample (not only nominated rows). Returns
     `cohort_df` with new columns `contrast_score`, `contrast_veto`, `contrast_min_score`, and
