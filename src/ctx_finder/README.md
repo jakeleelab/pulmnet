@@ -194,6 +194,52 @@ Or via the shared driver script:
 python ctx_run_common/phase6_loss_segment_filter.py --manifest <path> --out <cohort_dir> [--v7-filtered-file ...] [--min-loss-segments 3]
 ```
 
+## Within-sample contrast filter (`ctx_features.apply_within_sample_contrast_filter`)
+
+Third post-hoc filter, applied after the loss-segment filter, with the same rule in every
+cohort. Adopted 2026-10-02.
+
+**Motivation.** Manual review of the pancreatic NET calls against the pathology sign-out
+CN plots found many oscillation-pathway calls in noisy samples (CN jitter across the whole
+genome) where the called chromosome did not look different from the sample's other
+chromosomes. No sample-level noise metric (FACETS `sd_cnlr_residual`, probe-to-probe
+jitter, subclonal-segment fraction, FACETS QC flags) separated those from real calls
+without also removing reviewed carcinoid true positives.
+
+**Rule.** For each chromosome and each of six complexity features (`cp_osc_chain`,
+`cp_n_changepoints`, `n_allelic_state_changes`, `longest_osc_chain_k3`,
+`n_altered_islands`, `segments_per_probe`), a robust z-score against the same sample's
+other chromosomes: `(x - median(others)) / max(1.4826 * MAD(others), floor)`. The floors
+are fixed constants (`CONTRAST_FEATURE_FLOORS`). `contrast_score` is the mean of the
+z-scores clipped to [-5, 10]. An oscillation-pathway call is kept only if
+`contrast_score >= 2.0`. Shard-pathway calls are exempt, because oscillation features don't
+describe them. The median and MAD of the *other* chromosomes stay robust when a minority of
+chromosomes are shattered, so multi-chromosome chromothripsis is kept.
+
+**Validation** (`pulmnet/ctx_contrast_20260919/`):
+- **Carcinoid:** 48/48 positive samples kept. Only C017-T02 chr2/7/11/19 were dropped,
+  and the sample stays positive via its chr12/18 shard calls.
+- **Pancreatic NET (reviewed calls):** 21/22 endorsed samples kept. C013-T01 chr3
+  (score 1.8) was lost, which was accepted. 7/23 noisy and 3/9 overcalled samples removed.
+
+**Rejected alternatives.**
+- Per-sample 2-cluster splitting lost 12/48 carcinoid positives.
+- Merging LOH runs across lcn = NA segments (option C) lost 18 carcinoid patients. Short
+  retained or gained chromothripsis fragments are often lcn = NA.
+- A sample-level `sd_cnlr_residual` cutoff removed reviewed carcinoid true positives.
+
+| Cohort (frozen 2026_09_19) | Patients before -> after |
+|---|---|
+| Lung carcinoid | 41/236 -> 41/236 (17.4%) |
+| Pancreatic NET | 54/450 -> 44/450 (9.8%) |
+| GI NET | 29/241 -> 28/241 (11.6%) |
+| Classical SCLC | 145/658 -> 123/658 (18.7%) |
+| aSCLC | 12/19 -> 12/19 |
+
+Applied automatically by `ctx_run_common/phase6_loss_segment_filter.py`. Use
+`--no-contrast-filter` to reproduce the pre-2026-10-02 output, and `--min-contrast-score` to
+change the cutoff.
+
 ## Shard threshold: baseline-relative + embedded-in-loss (`compute_baseline_shard_features`)
 
 The loss-dominant/shard pathway originally required a surviving fragment
@@ -307,6 +353,36 @@ import ctx_features as cf
 cf.CENTROMERE_HG19_MB            # {"1": (121.5, 128.9), ...} -- override via
 shard_df = cf.compute_baseline_shard_features(seg_df, ploidy, centromere_mb=...)  # centromere_mb kwarg if needed
 ```
+
+## Multi-shard oscillation (`compute_baseline_shard_features`, `multi_shard_min`)
+
+Adopted 2026-10-03 for every cohort. When a chromosome carries **two or more embedded
+shards**, the alternation baseline -> shard -> baseline -> shard -> baseline is itself an
+oscillation between two copy-number states. For such chromosomes the loss-dominance
+requirements (`deficit_min`, `baseline_frac_min`) are waived; everything else about a shard
+still applies (>= 5x the baseline, <= 15% of the chromosome, embedded in the baseline state,
+non-centromeric), as does the v7 noise veto. A chromosome with a single shard keeps the
+original loss-dominant rule.
+
+New columns in `cohort_baseline_shard_features.tsv`: `loss_dominant_hit` (original rule),
+`multi_shard_hit` (this rule); `loss_dominant_shard_hit` (the shard-pathway flag used
+downstream) is now their OR. `multi_shard_min=None` restores the previous behaviour.
+
+Motivation: expert review of pancreatic and GI NET misses where the shattered chromosome sits
+on a copy-neutral or gained backdrop with several high-level fragments (C006-T01 chr6,
+C019-T02 chr6, C015-T01 chr12; all confirmed on clinical CN plots).
+
+Effect (2026_09_19 runs; patients with `ctx_compatible`):
+
+| Cohort | New shard-pathway chromosomes | Of which called (rest noise-vetoed) | Patients before -> after |
+|---|---|---|---|
+| Lung carcinoid | 4 | 4 (2 already called otherwise) | 41/236 -> 41/236 |
+| Pancreatic NET | 4 | 4 (2 already called) | 44/450 -> 46/450 |
+| GI NET | 3 | 1 | 28/241 -> 29/241 |
+| Classical SCLC | 10 | 4 (3 already called) | 123/658 -> 123/658 |
+| aSCLC | 3 | 2 (both already called) | 12/19 -> 12/19 |
+
+New carcinoid chromosomes (already-positive patients): C017-T02 chr11, C021-T01 chr12.
 
 ## Installation (conda)
 

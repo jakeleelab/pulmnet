@@ -1094,6 +1094,7 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
                                     deficit_min=0.5,
                                     baseline_frac_min=0.5,
                                     small_frac_max=0.15,
+                                    multi_shard_min=2,
                                     tcn_col="tcn.em",
                                     centromere_mb=CENTROMERE_HG19_MB):
     """
@@ -1139,11 +1140,25 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
     be non-centromeric) correctly leaves genuine shards on the same
     chromosome untouched when a sample has more than one.
 
+    Multi-shard oscillation (ADOPTED 2026-10-03, all cohorts): when a chromosome
+    carries >= multi_shard_min embedded shards, the baseline -> shard -> baseline
+    -> shard -> baseline alternation is itself an oscillation between two states,
+    so the loss-dominance requirements (deficit_min, baseline_frac_min) are waived.
+    Every shard requirement still applies (>= shard_baseline_mult x baseline,
+    <= small_frac_max of the chromosome, embedded, non-centromeric), as does the
+    v7 noise veto downstream. A single shard keeps the original loss-dominant
+    criteria. Motivated by expert review of pancreatic/GI NET misses whose
+    shattered chromosome sits on a copy-neutral or gained backdrop with several
+    high-level fragments (C006-T01 chr6, C019-T02 chr6,
+    C015-T01 chr12). Pass multi_shard_min=None to disable.
+
     Returns one row per chromosome: baseline_cn (the length-weighted modal
     total-CN state), baseline_frac (how much of the chromosome that state
     covers), deficit (ploidy - baseline_cn), n_shards (embedded shards only;
-    see n_shard_candidates for the pre-embedding count), and the boolean
-    loss_dominant_shard_hit -- plus extent_start/extent_end/extent_length_mb/
+    see n_shard_candidates for the pre-embedding count), the booleans
+    loss_dominant_hit (original single-shard rule) and multi_shard_hit (rule
+    above), and loss_dominant_shard_hit = either one (the shard-pathway flag
+    used downstream) -- plus extent_start/extent_end/extent_length_mb/
     extent_frac: the genomic SPAN (first-to-last position) of the segments
     at the baseline state, as opposed to baseline_frac's total COVERAGE.
     These differ whenever the baseline state is fragmented (interrupted by
@@ -1170,6 +1185,7 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         if g.empty or chrom_len <= 0 or pd.isna(ploidy):
             rows.append(dict(chrom=c, baseline_cn=np.nan, baseline_frac=np.nan,
                               deficit=np.nan, n_shards=0, n_shard_candidates=0,
+                              loss_dominant_hit=False, multi_shard_hit=False,
                               loss_dominant_shard_hit=False,
                               extent_start=np.nan, extent_end=np.nan,
                               extent_length_mb=np.nan, extent_frac=np.nan))
@@ -1196,7 +1212,9 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         embedded_idx = [i for i in non_centromeric_idx
                          if is_baseline[:i].any() and is_baseline[i + 1:].any()]
         shards = g.loc[embedded_idx]
-        hit = (deficit >= deficit_min) and (baseline_frac >= baseline_frac_min) and (len(shards) >= 1)
+        loss_dominant_hit = (deficit >= deficit_min) and (baseline_frac >= baseline_frac_min) and (len(shards) >= 1)
+        multi_shard_hit = multi_shard_min is not None and len(shards) >= multi_shard_min
+        hit = loss_dominant_hit or multi_shard_hit
 
         base_segs = g.loc[g["_tcn"] == baseline_cn]
         extent_start = float(base_segs["_start"].min())
@@ -1207,6 +1225,8 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
         rows.append(dict(chrom=c, baseline_cn=baseline_cn, baseline_frac=round(baseline_frac, 4),
                           deficit=round(deficit, 3), n_shards=int(len(shards)),
                           n_shard_candidates=n_shard_candidates,
+                          loss_dominant_hit=bool(loss_dominant_hit),
+                          multi_shard_hit=bool(multi_shard_hit),
                           loss_dominant_shard_hit=bool(hit),
                           extent_start=extent_start, extent_end=extent_end,
                           extent_length_mb=round(extent_length_mb, 2),
@@ -1675,6 +1695,96 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
     d["sample_flag_final"] = d.groupby(sample_col)["nominated_final"].transform("any")
     d["loss_segment_min_count"] = min_loss_segments
 
+    return d
+
+
+# Features and fixed MAD floors for the within-sample contrast filter. The floors only stop a
+# zero MAD (most chromosomes of a sample sharing the same count) from blowing up the z-score:
+# one count step (1.4826 = MAD scale of a 1-unit spread) for the count features, and the
+# pooled median per-sample MAD of segments_per_probe (carcinoid + pancreatic NET + GI NET,
+# 2026-10-02). Fixed constants, so the filter never depends on which cohorts are loaded.
+CONTRAST_FEATURE_FLOORS = {
+    "cp_osc_chain": 1.4826,
+    "cp_n_changepoints": 1.4826,
+    "n_allelic_state_changes": 1.4826,
+    "longest_osc_chain_k3": 1.4826,
+    "n_altered_islands": 1.4826,
+    "segments_per_probe": 0.0008620492439885324,
+}
+
+
+def compute_within_sample_contrast(cohort_df, *, features=CONTRAST_FEATURE_FLOORS,
+                                   sample_col="SAMPLE_ID", min_other_chroms=5,
+                                   z_clip=(-5.0, 10.0)):
+    """
+    Per chromosome, how much more complex it is than the SAME sample's other chromosomes.
+    For each feature: z = (x - median(others)) / max(1.4826 * MAD(others), floor), where
+    `others` are all of the sample's other chromosomes. The median/MAD of the other
+    chromosomes is robust to a minority of shattered chromosomes, so multi-chromosome
+    chromothripsis does not mask itself. contrast_score = mean of the clipped z-scores.
+    Returns a Series aligned to cohort_df.index (NaN when < min_other_chroms are available).
+    """
+    d = cohort_df
+    zs = []
+    for f, floor in features.items():
+        x = pd.to_numeric(d[f], errors="coerce").values
+        z = np.full(len(d), np.nan)
+        for _, idx in d.groupby(sample_col).indices.items():
+            v = x[idx]
+            for k, i in enumerate(idx):
+                if np.isnan(v[k]):
+                    continue
+                others = np.delete(v, k)
+                others = others[~np.isnan(others)]
+                if len(others) < min_other_chroms:
+                    continue
+                med = np.median(others)
+                mad = 1.4826 * np.median(np.abs(others - med))
+                z[i] = (v[k] - med) / max(mad, floor)
+        zs.append(pd.Series(z, index=d.index).clip(*z_clip))
+    return pd.concat(zs, axis=1).mean(axis=1)
+
+
+def apply_within_sample_contrast_filter(cohort_df, *, min_contrast_score=2.0,
+                                        nominated_col="nominated_final",
+                                        shard_col="loss_dominant_shard_hit",
+                                        sample_col="SAMPLE_ID", chrom_col="chrom"):
+    """
+    Third post-hoc filter, applied on top of `apply_loss_segment_filter`. ADOPTED 2026-10-02
+    for every cohort (carcinoid, aSCLC, classical SCLC, pancreatic NET, GI NET).
+
+    Motivation: manual review of the pancreatic NET calls against pathology sign-out CN
+    plots found many oscillation-pathway calls in noisy samples (CN jitter across the whole
+    genome) where the called chromosome "doesn't look different from the other chromosomes".
+    No sample-level noise metric separated these from real calls without also removing
+    reviewed carcinoid true positives, but the reviewer's own criterion -- does the
+    chromosome stand out from the rest of its sample -- did.
+
+    Keeps an oscillation-pathway call only if contrast_score >= min_contrast_score (see
+    `compute_within_sample_contrast`; features cp_osc_chain, cp_n_changepoints,
+    n_allelic_state_changes, longest_osc_chain_k3, n_altered_islands, segments_per_probe).
+    Loss-dominant/shard-pathway calls are exempt: oscillation features don't describe them
+    (e.g. real carcinoid shard call C001-T01 chr11 scores 0.45).
+
+    Validated 2026-10-02 (pulmnet/ctx_contrast_20260919/): carcinoid 48/48 positive samples
+    kept (only C017-T02 chr2/7/11/19 dropped; sample stays positive via its shards);
+    pancreatic NET reviewed calls: 21/22 endorsed samples kept (C013-T01 chr3, score
+    1.8, accepted loss), 7/23 noisy and 3/9 overcalled samples removed. Per-sample
+    2-cluster splitting was tested and rejected (lost 12/48 carcinoid positives).
+
+    Expects every chromosome row of each sample (not only nominated rows). Returns
+    `cohort_df` with new columns `contrast_score`, `contrast_veto`, `contrast_min_score`, and
+    `nominated_final` / `sample_flag_final` updated.
+    """
+    d = cohort_df.copy()
+    d["contrast_score"] = compute_within_sample_contrast(d, sample_col=sample_col)
+    shard = d[shard_col].fillna(False).astype(bool) if shard_col in d.columns else pd.Series(False, index=d.index)
+    nominated = d[nominated_col].fillna(False).astype(bool)
+    veto = nominated & (~shard) & ~(d["contrast_score"] >= min_contrast_score)
+    d["contrast_veto"] = veto
+    d["nominated_final"] = nominated & (~veto)
+    d["sample_flag_final"] = d.groupby(sample_col)["nominated_final"].transform("any")
+    d["contrast_min_score"] = min_contrast_score
     return d
 
 
