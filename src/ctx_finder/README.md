@@ -2,24 +2,46 @@
 
 Chromothripsis-footprint detection on sparse FACETS (targeted-panel) copy-number data.
 
+**Version 0.8.** Versions: v0.1 is the code deposited with the original manuscript submission; v0.8 is
+the version used for the revision (classifier v7 plus the filters described below). Internal names such as
+`nominated_v7` refer to the classifier generation, not the package version.
+
 ## Summary
 
 `ctx_finder` scans each chromosome of a tumor sample and nominates the ones that carry a chromothripsis footprint. It works on the coarse, sparse copy-number profiles produced by FACETS on targeted gene panels, where classic WGS-based callers (ShatterSeek and similar) may not apply.
 
-For every (sample, chromosome) it builds copy-number oscillation features (the longest contiguous chain confined to a small number of CN states, allelic LOH-versus-het interleaving, an altered-footprint extent, and a probe-level changepoint confidence. A fixed-threshold classifier combines these into a per-chromosome call, summarized as a sample-level flag (`sample_flag`).
+For every (sample, chromosome) it builds copy-number oscillation features (the longest contiguous chain confined to a small number of CN states, allelic LOH-versus-het interleaving, an altered-footprint extent, and a probe-level changepoint confidence), plus a separate loss-dominant "shard" description. Fixed-threshold rules combine these into a per-chromosome call (`nominated_final`), summarized as a sample-level flag (`ctx_compatible`).
 
-Time-consuming per-sample tasks that compute the changepoints is ran as a Slurm array. This can be adapted to the cluster-setting as needed (or ran sequentially). 
+The per-sample changepoint pass is run as a Slurm array; it can be adapted to other clusters or run sequentially.
 
 ```
 ctx_finder/
-├── run_ctx_pipeline.py    # manifest + cohort feature builder   (ADD THIS)
-├── ctx_changepoint.py     # per-chromosome changepoint features  (ADD THIS)
-├── ctx_features.py        # chromosome features + v6 classifier + evaluation
+├── run_ctx_pipeline.py    # manifest + cohort feature builder
+├── ctx_changepoint.py     # per-chromosome changepoint features
+├── ctx_features.py        # chromosome features, classifiers (v6, v7) and post-hoc filters
 ├── ctx_cp_parallel.py     # Slurm-array launcher / worker / collector
 ├── ctx_label.py           # per-chromosome inspection plots
 ├── ctx_plots.py           # cohort-level diagnostic plots
-└── ctx_sibling.py         # sibling-sample corroboration check
+├── ctx_sibling.py         # sibling-sample corroboration check
+└── pipeline/              # command-line drivers, phases 1-7 (see "Running guide")
 ```
+
+## Algorithm, step by step
+
+1. **Input:** per sample, the FACETS segments (cncf) and probe-level data (jointseg), with FACETS purity and ploidy.
+2. **Probe copy number:** each probe's log-ratio is converted to an absolute total copy number using purity and ploidy.
+3. **Chromosome features:** copy-number states, oscillation chains, allele-specific state changes, altered footprint and probe noise per chromosome.
+4. **Changepoint re-segmentation:** probes are re-segmented independently of FACETS (Slurm array) and the oscillation chain is re-scored on those changepoints.
+5. **Oscillation pathway (classifier v7):** a chromosome is nominated if its combined oscillation/allelic score is >= 0.35, its oscillation chain has >= 4 segments, and its altered footprint is not weak (footprint < 15% of the chromosome with <= 3 islands is vetoed).
+6. **Shard pathway:** a chromosome is also nominated if it is loss-dominant (modal state >= 0.5 copies below ploidy, covering >= 50% of the chromosome) and carries an embedded, non-centromeric fragment at >= 5x that baseline; with two or more such fragments the loss requirement is waived (multi-shard oscillation).
+7. **Noise veto:** nominations from either pathway are rejected on chromosomes with probe noise (`dot_mad_within`) > 1.0.
+8. **Thin-chain filter:** segments with FACETS cell fraction (`cf.em`) < 0.15 are cut out of the chain; an oscillation call is dropped if the longest surviving chain has < 4 segments.
+9. **Loss-segment filter:** an oscillation call needs >= 3 loss segments on the chromosome, unless whole-genome doubling explains their absence.
+10. **Within-sample contrast filter:** an oscillation call is dropped if the chromosome does not stand out from the same sample's other chromosomes (contrast score < 2.0).
+11. **QC exclusion:** calls are cleared in samples whose FACETS purity was set manually on review (`purity_source == "reviewer_override"`) or that are on an optional manual QC list.
+12. **Roll-up:** a sample is positive if any chromosome is called (`ctx_compatible`).
+
+Steps 8-10 apply only to oscillation-pathway calls; shard-pathway calls are exempt. Each step is described in detail in the sections below.
 
 ## Sibling corroboration (`ctx_sibling.py`)
 
@@ -117,7 +139,7 @@ filtered = cf.apply_thin_chain_filter(v7, man_df, tablesDir)   # v7 = apply_clas
 Or via the shared driver script:
 
 ```bash
-python ctx_run_common/phase5_thin_chain_filter.py --manifest <path> --out <cohort_dir> [--v7-file ...] [--min-chain 4]
+python pipeline/phase5_thin_chain_filter.py --manifest <path> --out <cohort_dir> [--v7-file ...] [--min-chain 4]
 ```
 
 ## Loss-segment filter (`ctx_features.apply_loss_segment_filter`)
@@ -191,7 +213,7 @@ final = cf.apply_loss_segment_filter(filtered, man_df)   # filtered = apply_thin
 Or via the shared driver script:
 
 ```bash
-python ctx_run_common/phase6_loss_segment_filter.py --manifest <path> --out <cohort_dir> [--v7-filtered-file ...] [--min-loss-segments 3]
+python pipeline/phase6_loss_segment_filter.py --manifest <path> --out <cohort_dir> [--v7-filtered-file ...] [--min-loss-segments 3]
 ```
 
 ## Within-sample contrast filter (`ctx_features.apply_within_sample_contrast_filter`)
@@ -236,7 +258,7 @@ chromosomes are shattered, so multi-chromosome chromothripsis is kept.
 | Classical SCLC | 145/658 -> 123/658 (18.7%) |
 | aSCLC | 12/19 -> 12/19 |
 
-Applied automatically by `ctx_run_common/phase6_loss_segment_filter.py`. Use
+Applied automatically by `pipeline/phase6_loss_segment_filter.py`. Use
 `--no-contrast-filter` to reproduce the pre-2026-10-02 output, and `--min-contrast-score` to
 change the cutoff.
 
@@ -421,76 +443,48 @@ Coordinates are hg19 in the reference build used here. The plotting helper reads
 
 ## Running guide
 
-The run is two phases because the changepoint pass goes through Slurm. Pick one base output directory; everything is written under it.
-
-### Phase 1: cohort features + launch the changepoint array
-
-```python
-import os
-import pandas as pd
-import run_ctx_pipeline as rp
-import ctx_features    as cf
-import ctx_cp_parallel as cpx
-
-OUT    = "/path/to/results/my_run"
-TABLES = os.path.join(OUT, "tables")    # jointseg cache + feature tables
-CP_OUT = os.path.join(OUT, "cp_run")    # changepoint outputs
-for d in (TABLES, CP_OUT):
-    os.makedirs(d, exist_ok=True)
-
-MANIFEST = "/path/to/manifest.tsv"
-man_df = pd.read_csv(MANIFEST, sep="\t")
-
-# 1. which samples are processable (have a readable FACETS path, etc.)
-proc, ledger = rp.build_processable_sample_ids(man_df, TABLES)
-
-# 2. build per-chromosome cohort features (regenerates jointseg from Rdata; needs Rscript)
-cohort, failed = rp.build_cohort_features(man_df, TABLES, proc, use_cache=True)
-cohort.to_csv(os.path.join(TABLES, "cohort_chrom_features.tsv"), sep="\t", index=False)
-
-# 3. write the Slurm array script for the changepoint pass (penalty = 8)
-cpx.launch(out_dir=CP_OUT, pens=[8], chunk=4, man_path=MANIFEST, tablesDir=TABLES)
-```
-
-Then submit the array job:
+Run the drivers in `pipeline/` in order. Each takes the manifest (`--manifest`) and one output directory
+(`--out`); everything is written under `<out>/tables` and `<out>/cp_run`. Run from any directory; the
+scripts locate the package themselves. Restrict the manifest to the samples of the cohort you want to call.
 
 ```bash
-sbatch /path/to/results/my_run/cp_run/run_array.sbatch
-squeue -u $USER          # wait until done; logs in cp_run/logs/task_*.out
-ls /path/to/results/my_run/cp_run/cp_features/ | wc -l   # ~one .tsv per sample, no .FAILED markers
+M=/path/to/manifest.tsv
+O=/path/to/results/my_cohort
+
+# 1. per-chromosome features + Slurm array script for the changepoint pass (penalty 8)
+python pipeline/phase1_build_features.py --manifest $M --out $O \
+    --partition <slurm_partition> \
+    --env-setup 'source <miniconda>/etc/profile.d/conda.sh; conda activate ctx'
+sbatch $O/cp_run/run_array.sbatch       # wait until done; logs in cp_run/logs/
+
+# 2. collect changepoint features, v6 stage
+python pipeline/phase2_collect_v6.py --manifest $M --out $O
+# 3. shard features + classifier v7 (oscillation and shard pathways, noise veto)
+python pipeline/phase3_v7_classify.py --manifest $M --out $O
+# 4. (report only) sibling-sample breakpoint corroboration
+python pipeline/phase4_sibling_corroboration.py --manifest $M --out $O --roster <sample_table.tsv>
+# 5. thin-chain filter
+python pipeline/phase5_thin_chain_filter.py --manifest $M --out $O
+# 6. loss-segment filter, then within-sample contrast filter
+python pipeline/phase6_loss_segment_filter.py --manifest $M --out $O
+# 7. reviewer-purity / manual QC exclusion
+python pipeline/phase7_reviewer_purity_exclusion.py --manifest $M --out $O [--qc-file <exclusions.tsv>]
 ```
 
-
-### Phase 2: collect changepoint output, classify, evaluate
-
-```python
-cohort = pd.read_csv(os.path.join(TABLES, "cohort_chrom_features.tsv"), sep="\t")
-
-# 4. gather per-sample changepoint tsvs, keep penalty = 8
-cpx.collect(CP_OUT, pen_const=8.0)                       # writes cp_run/cohort_cp_features.tsv
-cp8 = pd.read_csv(os.path.join(CP_OUT, "cohort_cp_features.tsv"), sep="\t")
-cp8 = cp8[cp8["pen_const"] == 8.0].copy()
-
-# 5. merge changepoint features onto the cohort (SAMPLE_ID + normalized chrom)
-cohort["_c"] = cohort["chrom"].map(cf._norm_chrom)
-cp8["_c"]    = cp8["chrom"].map(cf._norm_chrom)
-m = cohort.merge(cp8.drop(columns=["chrom"]), on=["SAMPLE_ID", "_c"], how="left")
-
-# 6. apply the classifier
-purity_map = dict(zip(man_df["SAMPLE_ID"].astype(str),
-                      pd.to_numeric(man_df["purity"], errors="coerce")))
-v6 = cf.apply_classifier_v6(m, purity_map)
-v6.to_csv(os.path.join(TABLES, "cohort_chrom_features_v6.tsv"), sep="\t", index=False)
-
-# 7. (optional, needs chr_ctx truth) score performance
-cf.evaluate_classifier(v6, nominated_col="nominated_v6", label="v6")
-```
+Phases 2-7 take seconds to minutes; phase 1 and the changepoint array dominate the run time. The library
+functions can also be called directly from Python (see the sections above for each filter's API).
 
 ### Output
 
-`cohort_chrom_features_v6.tsv` has one row per (sample, chromosome). Important columns include:
+`<out>/tables/cohort_chrom_features_final.qc_adjusted.tsv` has one row per (sample, chromosome):
 
-- `nominated_v6`: the per-chromosome chromothripsis call (boolean)
-- `sample_flag_v6`: True if any chromosome in that sample is nominated
-- supporting columns: `ctx_suppress` (suppressed mechanistic score), `longest_osc_chain_k3`, `cp_osc_confidence`, `dot_mad_within` (probe noise), `altered_union_frac`, `n_altered_islands`.
+- `nominated_final`: the final per-chromosome chromothripsis call (boolean)
+- `ctx_compatible`: True on every row of a sample with at least one called chromosome
+- `loss_dominant_shard_hit`: the chromosome passed the shard criteria (set before the noise veto, so it can be True on an uncalled chromosome)
+- intermediate calls from each stage: `nominated_v7`, `nominated_v7_filtered`, plus `thin_chain_veto`, `loss_segment_veto`, `contrast_score` / `contrast_veto`
+- supporting features: `longest_osc_chain_k3`, `cp_osc_chain`, `dot_mad_within` (probe noise), `altered_union_frac`, `n_altered_islands`, and others
 
+## Version history
+
+- **v0.8** (revision): classifier v7 (manual-review-calibrated thresholds, alternate allelic path, loss-dominant shard pathway, second-look confidence); sibling corroboration report; thin-chain filter v2; loss-segment filter; baseline-relative, embedded shard rule with centromeric-artifact filter; within-sample contrast filter; multi-shard oscillation rule; command-line pipeline drivers.
+- **v0.1** (original submission): feature builder, changepoint pass and classifier v6.
