@@ -16,9 +16,9 @@ import pandas as pd
 
 # hg19 centromere + immediate pericentromeric-heterochromatin region, Mb.
 # Approximate (UCSC cytoBand/gap track order of magnitude, generously padded
-# on the flanks) -- used only to reject candidate "shards" that fall in this
-# low-mappability, probe-desert zone, not for any coordinate-precise purpose.
-# See compute_baseline_shard_features, "centromeric-shard artifact" filter.
+# on the flanks) -- used only to reject candidate focal amplifications that fall
+# in this low-mappability, probe-desert zone, not for any coordinate-precise purpose.
+# See compute_baseline_shard_features (centromeric-artifact rule).
 CENTROMERE_HG19_MB = {
     "1": (121.5, 128.9), "2": (92.3, 95.3), "3": (90.5, 93.5), "4": (49.7, 52.7),
     "5": (46.5, 50.7), "6": (58.6, 61.6), "7": (58.1, 61.1), "8": (43.0, 46.8),
@@ -1038,14 +1038,13 @@ def apply_classifier_v6(cohort_df, purity_map, *, params=None,
 #
 #   1. min_osc_chain 5 -> 4.
 #   2. noise_max 1.135 -> 1.0 (tighter probe-noise ceiling).
-#   3. An alternate allelic-evidence path (see F_allelic_v7 below) and a
-#      parallel loss-dominant-baseline pathway (see
-#      compute_baseline_shard_features) for chromothripsis patterns the v6
-#      mechanistic score structurally cannot see: post-WGD chromothripsis
-#      that never drops minor-allele copy number to literal zero, and
-#      loss-dominant chromothripsis where the shattered/lost state IS the
-#      chromosome's own local majority, so nothing reads as "altered"
-#      relative to itself.
+#   3. An alternate allelic-evidence criterion (see F_allelic_v7 below) and
+#      amplification-based candidates (see compute_baseline_shard_features)
+#      for chromothripsis patterns the v6 mechanistic score structurally
+#      cannot see: post-WGD chromothripsis that never drops minor-allele copy
+#      number to literal zero, and chromothripsis with chromosome-wide loss
+#      where the lost state IS the chromosome's own local majority, so nothing
+#      reads as "altered" relative to itself.
 #   4. A gated "second look" on cp_osc_confidence (see
 #      compute_second_look_confidence below). The probe-level confidence
 #      check runs at an anti-flood pen_const=8.0, calibrated cohort-wide to
@@ -1066,56 +1065,57 @@ def compute_baseline_shard_features(seg_df, ploidy, *,
                                     tcn_col="tcn.em",
                                     centromere_mb=CENTROMERE_HG19_MB):
     """
-    Per-chromosome "loss-dominant baseline + retained/amplified shard" features.
+    Per-chromosome features for amplification-based candidates: a chromosome-wide
+    copy-number loss carrying embedded focal amplifications.
 
-    Some chromothripsis events are loss-dominant: most of the chromosome
-    collapses to one low copy-number state, so oscillation-chain features
-    (built relative to that chromosome's own modal state) see nothing
-    "altered" -- the lost state IS the local mode. Comparing the chromosome's
-    dominant state against the sample's genome-wide ploidy surfaces these
-    cases. Requiring a small, highly-amplified surviving fragment (a "shard")
-    keeps the signal specific to real shattering rather than an ordinary
-    whole-chromosome deletion, which has no such internal structure.
+    Chromothripsis can produce high-level, often extrachromosomal, amplification of a
+    few fragments while most of the chromosome is lost. On panel data this appears as
+    a few amplified segments rather than as oscillation, and oscillation-chain features
+    (built relative to the chromosome's own modal state) see nothing "altered" -- the
+    lost state IS the local mode. Comparing the chromosome's dominant state against the
+    sample's genome-wide ploidy surfaces these cases. Requiring a small, highly
+    amplified fragment (a focal amplification) keeps the signal specific to
+    chromothripsis rather than an ordinary whole-chromosome deletion, which has no such
+    internal structure.
 
-    The shard threshold is relative to the chromosome's OWN loss-level
-    baseline_cn (floored at 1 to avoid a vacuous threshold when baseline_cn
-    is itself 0, e.g. a homozygous-deletion backdrop), not the sample's
-    genome-wide ploidy -- a low-ploidy sample can otherwise set an
-    unreachably high bar for a chromosome whose local backdrop is already
-    a deep loss. A shard also must be genomically EMBEDDED in the loss
-    backdrop (a baseline-state segment somewhere upstream AND somewhere
-    downstream of it), not merely small; a small high segment flanked by an
-    unrelated gain rather than the loss backdrop is not a shard.
+    The focal-amplification threshold is relative to the chromosome's OWN baseline_cn
+    (floored at 1 to avoid a vacuous threshold when baseline_cn is itself 0, e.g. a
+    homozygous-deletion backdrop), not the sample's genome-wide ploidy -- a low-ploidy
+    sample can otherwise set an unreachably high bar for a chromosome whose local
+    backdrop is already a deep loss. A focal amplification must also be genomically
+    EMBEDDED in the baseline (a baseline-state segment somewhere upstream AND somewhere
+    downstream of it), not merely small; a small high segment flanked by an unrelated
+    gain rather than the baseline is not counted.
 
     A candidate is also rejected if it overlaps CENTROMERE_HG19_MB for its
     chromosome: FACETS often emits a single sparse-probe segment spanning the
     low-mappability pericentromeric region, which recurs at the same
     coordinates across unrelated samples and is a panel artifact rather than
     an amplified fragment. Only the centromeric candidate is removed, so
-    genuine shards elsewhere on the same chromosome are unaffected.
+    genuine focal amplifications elsewhere on the same chromosome are unaffected.
 
-    Multi-shard oscillation: when a chromosome
-    carries >= multi_shard_min embedded shards, the baseline -> shard -> baseline
-    -> shard -> baseline alternation is itself an oscillation between two states,
-    so the loss-dominance requirements (deficit_min, baseline_frac_min) are waived.
-    Every shard requirement still applies (>= shard_baseline_mult x baseline,
-    <= small_frac_max of the chromosome, embedded, non-centromeric), as does the
-    v7 noise veto downstream. A single shard keeps the original loss-dominant
-    criteria. This captures shattered chromosomes on a copy-neutral or gained
-    backdrop that carry several high-level fragments. Pass multi_shard_min=None
-    to disable.
+    Multiple focal amplifications: when a chromosome carries >= multi_shard_min
+    embedded focal amplifications, the baseline -> amplification -> baseline ->
+    amplification -> baseline alternation is itself an oscillation between two states,
+    so the chromosome-wide-loss requirements (deficit_min, baseline_frac_min) are
+    waived. Every focal-amplification requirement still applies (>= shard_baseline_mult
+    x baseline, <= small_frac_max of the chromosome, embedded, non-centromeric), as does
+    the probe-level noise veto downstream. A single focal amplification keeps the
+    chromosome-wide-loss criteria. This captures chromosomes on a copy-neutral or gained
+    backdrop that carry several high-level fragments. Pass multi_shard_min=None to
+    disable.
 
     Returns one row per chromosome: baseline_cn (the length-weighted modal
     total-CN state), baseline_frac (how much of the chromosome that state
-    covers), deficit (ploidy - baseline_cn), n_shards (embedded shards only;
-    see n_shard_candidates for the pre-embedding count), the booleans
-    loss_dominant_hit (original single-shard rule) and multi_shard_hit (rule
-    above), and loss_dominant_shard_hit = either one (the shard-pathway flag
-    used downstream) -- plus extent_start/extent_end/extent_length_mb/
-    extent_frac: the genomic SPAN (first-to-last position) of the segments
-    at the baseline state, as opposed to baseline_frac's total COVERAGE.
+    covers), deficit (ploidy - baseline_cn), n_shards (embedded focal amplifications
+    only; see n_shard_candidates for the pre-embedding count), the booleans
+    loss_dominant_hit (single focal amplification on a chromosome-wide loss) and
+    multi_shard_hit (rule above), and loss_dominant_shard_hit = either one (the
+    amplification-based candidate flag used downstream) -- plus extent_start/
+    extent_end/extent_length_mb/extent_frac: the genomic SPAN (first-to-last position)
+    of the segments at the baseline state, as opposed to baseline_frac's total COVERAGE.
     These differ whenever the baseline state is fragmented (interrupted by
-    the shard, or by other segments) rather than one contiguous block -- a
+    the amplification, or by other segments) rather than one contiguous block -- a
     baseline that's scattered in small patches across the whole chromosome
     has high extent but can have much lower coverage; a baseline confined
     to one corner has both low extent and low coverage. extent_frac divides
@@ -1334,10 +1334,10 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
         (~d["weak_altered_footprint_v7"])
     )
 
-    # ---- parallel loss-dominant-baseline pathway ----
+    # ---- amplification-based candidates ----
     # shard_df hits already carry their own deficit/footprint logic
     # (see compute_baseline_shard_features); they are gated by the SAME noise
-    # ceiling as the main pathway, which rejects calls from noisy libraries.
+    # ceiling as CN oscillation-based candidates, which rejects calls from noisy libraries.
     sd = shard_df[[sample_col, chrom_col, "loss_dominant_shard_hit"]].copy()
     sd[chrom_col] = sd[chrom_col].astype(str)
     d[chrom_col] = d[chrom_col].astype(str)
@@ -1408,14 +1408,14 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
     the fragmented, multi-breakpoint pattern of chromothripsis; on sparse
     panel data, segment size is an unreliable proxy for genomic extent.
 
-    For each currently-nominated, non-shard (sample, chrom), keeps the call
+    For each currently-nominated CN oscillation-based (sample, chrom), keeps the call
     only if EITHER `n_loss_segments >= min_loss_segments` (default 3) OR the
     row independently qualifies for the SAME WGD-masked allelic rescue
     `apply_classifier_v7` already uses (`frac_loh < v7_allelic_alt_frac_loh_max`
     AND `n_allelic_state_changes >= v7_allelic_alt_lo`) -- a chromosome with
     real minor-allele complexity substituting for literal LOH (chromothripsis
     after genome doubling) is not penalized for having no loss segments.
-    Loss-dominant/shard-pathway calls are exempt.
+    Amplification-based candidates are exempt.
     The filter only removes calls; it does not add chromosomes that v7 did not
     nominate.
 
@@ -1521,10 +1521,10 @@ def apply_within_sample_contrast_filter(cohort_df, *, min_contrast_score=2.0,
     every chromosome. A call is therefore kept only if the chromosome stands out from the
     other chromosomes of the same sample, rather than relying on a sample-level noise cutoff.
 
-    Keeps an oscillation-pathway call only if contrast_score >= min_contrast_score (see
+    Keeps a CN oscillation-based candidate only if contrast_score >= min_contrast_score (see
     `compute_within_sample_contrast`; features cp_osc_chain, cp_n_changepoints,
     n_allelic_state_changes, longest_osc_chain_k3, n_altered_islands, segments_per_probe).
-    Loss-dominant/shard-pathway calls are exempt, because oscillation features do not
+    Amplification-based candidates are exempt, because oscillation features do not
     describe them.
 
     Expects every chromosome row of each sample (not only nominated rows). Returns
@@ -1559,7 +1559,7 @@ def apply_noise_veto(cohort_df, man_df, *, noise_max=1.0,
                      nominated_col="nominated_final",
                      sample_col="SAMPLE_ID", chrom_col="chrom"):
     """
-    Probe-level noise veto, the last chromosome-level step (both pathways).
+    Probe-level noise veto, the last chromosome-level step (all candidates).
 
     A call is removed when the chromosome's within-segment probe noise (`noise_col`,
     absolute copy-number units) exceeds `noise_max`, unless the copy-number changes are

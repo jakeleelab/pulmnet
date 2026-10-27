@@ -50,29 +50,31 @@ A tab-separated manifest with one row per sample:
 3. **Changepoint re-segmentation.** Probes are re-segmented independently of FACETS (PELT, with a
    penalty scaled to each chromosome's probe noise), and the oscillation chain is re-scored on the
    inferred changepoints.
-4. **Oscillation pathway.** A chromosome is nominated when its combined oscillation and allelic
+4. **CN oscillation-based candidates.** A chromosome is nominated when its combined oscillation and allelic
    score is ≥ 0.35, its oscillation chain spans ≥ 4 segments, and its altered footprint is not
    negligible. A separate allelic criterion captures oscillation after whole-genome doubling, where
    LOH is not reached.
-5. **Shard pathway.** A chromosome is also nominated when it is loss-dominant (its modal copy-number
-   state lies ≥ 0.5 copies below the sample ploidy and covers ≥ 50% of the chromosome) and retains
-   an embedded, non-centromeric fragment at ≥ 5× the modal state. A chromosome with two or more
-   such fragments is nominated regardless of its background state, as the alternation between
-   background and fragments is itself an oscillation.
-6. **Loss-segment filter.** An oscillation call requires ≥ 3 separate loss blocks (total copy
+5. **Amplification-based candidates.** Chromothripsis can produce high-level, often
+   extrachromosomal, amplification of a few fragments, which panel data resolve as a few amplified
+   segments rather than as oscillation. A chromosome is nominated when it shows chromosome-wide
+   copy-number loss (its modal state lies ≥ 0.5 copies below the sample ploidy and covers ≥ 50% of
+   the chromosome) and retains an embedded, non-centromeric focal amplification at ≥ 5× the modal
+   state. A chromosome with two or more such focal amplifications is nominated regardless of its
+   background state.
+6. **Loss-segment filter.** A CN oscillation-based candidate requires ≥ 3 separate loss blocks (total copy
    number 1 or complete LOH) on the chromosome, unless it qualifies through the post-doubling
    allelic criterion.
-7. **Within-sample contrast filter.** An oscillation call is kept only if the chromosome stands out
+7. **Within-sample contrast filter.** A CN oscillation-based candidate is kept only if the chromosome stands out
    from the same sample's other chromosomes (mean robust z-score across six complexity features
    ≥ 2.0), which removes calls driven by genome-wide noise.
-8. **Noise veto.** Calls from either pathway are rejected when the chromosome's probe-level noise
+8. **Probe-level noise veto.** Candidates of both types are rejected when the chromosome's probe-level noise
    exceeds a fixed limit, unless its copy-number steps are at least three times that noise and its
    contrast score is ≥ 1.5 (high-amplitude events that stand out in an otherwise noisy sample).
 9. **Sample-level QC.** Calls are cleared in samples with manually set purity or on an optional
    manual exclusion list.
 10. **Sample call.** A sample is positive if at least one chromosome is called.
 
-Steps 6–7 apply to oscillation-pathway calls only. Every step acts on each chromosome independently,
+Steps 6–7 apply to CN oscillation-based candidates only. Every step acts on each chromosome independently,
 so the order of steps 6–8 does not change the calls. Optionally, for patients with several samples,
 a sibling-corroboration report tests whether breakpoints of a call recur in the other samples.
 
@@ -106,7 +108,7 @@ python $PL/phase6_sample_qc.py    --manifest $M --out $O [--qc-file <exclusions.
 |---|---|
 | `nominated_final` | final chromosome-level chromothripsis call |
 | `ctx_compatible` | sample-level call (repeated on every row of the sample) |
-| `loss_dominant_shard_hit` | chromosome meets the shard-pathway criteria (before the noise veto) |
+| `loss_dominant_shard_hit` | chromosome meets the amplification-based criteria (before the noise veto) |
 | `nominated_v7`, `loss_segment_veto`, `contrast_score`, `contrast_veto`, `noise_veto`, `noise_veto_exception`, `step_to_noise` | intermediate calls and filter results |
 | `longest_osc_chain_k3`, `cp_osc_chain`, `n_allelic_state_changes`, `dot_mad_within`, ... | supporting features |
 
@@ -125,7 +127,7 @@ python $PL/phase6_sample_qc.py    --manifest $M --out $O [--qc-file <exclusions.
 
 - **v0.9**: thin-chain filter removed (redundant with the later filters); noise veto moved to the
   last chromosome-level step with a step-to-noise exception; command-line drivers renumbered.
-- **v0.8**: version used for the manuscript revision. Adds the shard pathway, post-doubling allelic
+- **v0.8**: version used for the manuscript revision. Adds amplification-based candidates, the post-doubling allelic
   criterion, thin-chain, loss-segment and within-sample contrast filters, sibling corroboration,
   and the command-line drivers.
 - **v0.1**: version deposited with the original manuscript submission.
