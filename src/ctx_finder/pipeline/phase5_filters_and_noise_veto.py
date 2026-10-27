@@ -2,17 +2,17 @@
 Phase 5 (any cohort): oscillation-call filters, then the probe-level noise veto, on top of the
 phase-3 classifier output (nominated_v7, nominated without the noise veto).
 
-1. Loss-segment filter: keep an oscillation-pathway (non-shard) call only if the chromosome has
+1. Loss-segment filter: keep a CN oscillation-based candidate only if the chromosome has
    >=min_loss_segments merged "loss" blocks (tcn.em==1 or lcn.em==0; see
    ctx_features._n_loss_segments), OR the row qualifies for apply_classifier_v7's post-WGD allelic
    criterion (frac_loh<v7_allelic_alt_frac_loh_max AND n_allelic_state_changes>=v7_allelic_alt_lo).
-2. Within-sample contrast filter: keep an oscillation-pathway call only if the chromosome stands
+2. Within-sample contrast filter: keep a CN oscillation-based candidate only if the chromosome stands
    out from the same sample's other chromosomes (contrast_score >= min_contrast_score). See
    ctx_features.apply_within_sample_contrast_filter.
-3. Noise veto (both pathways): remove a call when the chromosome's probe noise exceeds
+3. Probe-level noise veto (all candidates): remove a call when the chromosome's probe noise exceeds
    noise_max, unless its median copy-number step is >= step_to_noise_min x the noise AND its
    contrast_score >= exception_contrast_min. See ctx_features.apply_noise_veto.
-Loss-dominant/shard-pathway calls are exempt from filters 1 and 2.
+Amplification-based candidates are exempt from filters 1 and 2.
 
 Usage:
   python pipeline/phase5_filters_and_noise_veto.py --manifest <path> --out <dir> [--v7-file cohort_chrom_features_v7.tsv] [--min-loss-segments 3] [--min-contrast-score 2.0] [--noise-max 1.0] [--step-to-noise-min 3.0] [--exception-contrast-min 1.5] [--no-noise-exception]

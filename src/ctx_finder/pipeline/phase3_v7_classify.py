@@ -1,5 +1,5 @@
 """
-Phase 3 (any cohort): loss-dominant-baseline/shard features, gated second-look
+Phase 3 (any cohort): amplification-based candidate features, gated second-look
 confidence, then the v7 classifier (fixed thresholds). The noise veto is deferred to phase 5.
 
 Usage:
@@ -47,7 +47,7 @@ def main():
 
     shard_df = pd.concat(shard_frames, ignore_index=True)
     shard_df.to_csv(os.path.join(tables, "cohort_baseline_shard_features.tsv"), sep="\t", index=False)
-    print(f"Shard features: {len(shard_df)} chromosome rows across {len(sample_ids)} samples "
+    print(f"Amplification-based candidate features: {len(shard_df)} chromosome rows across {len(sample_ids)} samples "
           f"({len(failed)} failed to load)")
     if failed:
         print("Failed samples (up to 20):", failed[:20])
