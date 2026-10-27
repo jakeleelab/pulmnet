@@ -7,7 +7,7 @@ chromothripsis footprint. It is designed for the sparse, coarse copy-number prof
 produces from targeted gene panels (e.g. MSK-IMPACT), where whole-genome callers such as
 ShatterSeek are not applicable. Calls are made per chromosome and summarized per sample.
 
-Current version: **v0.8**.
+Current version: **v0.9**.
 
 ## Requirements
 
@@ -59,21 +59,21 @@ A tab-separated manifest with one row per sample:
    an embedded, non-centromeric fragment at ≥ 5× the modal state. A chromosome with two or more
    such fragments is nominated regardless of its background state, as the alternation between
    background and fragments is itself an oscillation.
-6. **Noise veto.** Nominations from either pathway are rejected when the chromosome's probe-level
-   noise exceeds a fixed limit.
-7. **Thin-chain filter.** Segments with a low FACETS cell fraction (< 0.15) are removed from the
-   oscillation chain; the call is kept only if the longest remaining chain still spans ≥ 4 segments.
-8. **Loss-segment filter.** An oscillation call requires ≥ 3 separate loss blocks (total copy
+6. **Loss-segment filter.** An oscillation call requires ≥ 3 separate loss blocks (total copy
    number 1 or complete LOH) on the chromosome, unless it qualifies through the post-doubling
    allelic criterion.
-9. **Within-sample contrast filter.** An oscillation call is kept only if the chromosome stands out
+7. **Within-sample contrast filter.** An oscillation call is kept only if the chromosome stands out
    from the same sample's other chromosomes (mean robust z-score across six complexity features
    ≥ 2.0), which removes calls driven by genome-wide noise.
-10. **Sample-level QC.** Calls are cleared in samples with manually set purity or on an optional
-    manual exclusion list.
-11. **Sample call.** A sample is positive if at least one chromosome is called.
+8. **Noise veto.** Calls from either pathway are rejected when the chromosome's probe-level noise
+   exceeds a fixed limit, unless its copy-number steps are at least three times that noise and its
+   contrast score is ≥ 1.5 (high-amplitude events that stand out in an otherwise noisy sample).
+9. **Sample-level QC.** Calls are cleared in samples with manually set purity or on an optional
+   manual exclusion list.
+10. **Sample call.** A sample is positive if at least one chromosome is called.
 
-Steps 7–9 apply to oscillation-pathway calls only. Optionally, for patients with several samples,
+Steps 6–7 apply to oscillation-pathway calls only. Every step acts on each chromosome independently,
+so the order of steps 6–8 does not change the calls. Optionally, for patients with several samples,
 a sibling-corroboration report tests whether breakpoints of a call recur in the other samples.
 
 ## Usage
@@ -92,11 +92,10 @@ python $PL/phase1_build_features.py --manifest $M --out $O \
 sbatch $O/cp_run/run_array.sbatch                 # step 3; wait for completion
 
 python $PL/phase2_collect_v6.py   --manifest $M --out $O    # collect changepoint features
-python $PL/phase3_v7_classify.py  --manifest $M --out $O    # steps 4-6
+python $PL/phase3_v7_classify.py  --manifest $M --out $O    # steps 4-5
 python $PL/phase4_sibling_corroboration.py --manifest $M --out $O --roster <samples.tsv>  # optional report
-python $PL/phase5_thin_chain_filter.py     --manifest $M --out $O    # step 7
-python $PL/phase6_loss_segment_filter.py   --manifest $M --out $O    # steps 8-9
-python $PL/phase7_reviewer_purity_exclusion.py --manifest $M --out $O [--qc-file <exclusions.tsv>]  # steps 10-11
+python $PL/phase5_filters_and_noise_veto.py --manifest $M --out $O   # steps 6-8
+python $PL/phase6_sample_qc.py    --manifest $M --out $O [--qc-file <exclusions.tsv>]  # steps 9-10
 ```
 
 ## Output
@@ -108,7 +107,7 @@ python $PL/phase7_reviewer_purity_exclusion.py --manifest $M --out $O [--qc-file
 | `nominated_final` | final chromosome-level chromothripsis call |
 | `ctx_compatible` | sample-level call (repeated on every row of the sample) |
 | `loss_dominant_shard_hit` | chromosome meets the shard-pathway criteria (before the noise veto) |
-| `nominated_v7`, `thin_chain_veto`, `loss_segment_veto`, `contrast_score`, `contrast_veto` | intermediate calls and filter results |
+| `nominated_v7`, `loss_segment_veto`, `contrast_score`, `contrast_veto`, `noise_veto`, `noise_veto_exception`, `step_to_noise` | intermediate calls and filter results |
 | `longest_osc_chain_k3`, `cp_osc_chain`, `n_allelic_state_changes`, `dot_mad_within`, ... | supporting features |
 
 ## Modules
@@ -124,6 +123,8 @@ python $PL/phase7_reviewer_purity_exclusion.py --manifest $M --out $O [--qc-file
 
 ## Version history
 
+- **v0.9**: thin-chain filter removed (redundant with the later filters); noise veto moved to the
+  last chromosome-level step with a step-to-noise exception; command-line drivers renumbered.
 - **v0.8**: version used for the manuscript revision. Adds the shard pathway, post-doubling allelic
   criterion, thin-chain, loss-segment and within-sample contrast filters, sibling corroboration,
   and the command-line drivers.

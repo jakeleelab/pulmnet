@@ -1,12 +1,12 @@
 """
-Phase 7 (any cohort): clear calls in samples whose FACETS purity was set
+Phase 6 (any cohort): clear calls in samples whose FACETS purity was set
 manually (manifest column purity_source == "reviewer_override"), which
 indicates that FACETS could not fit the profile on its own, and in samples
 listed in an optional manual QC file. Features stay in the table; only the
-calls are cleared. Run after phase6_loss_segment_filter.py.
+calls are cleared. Run after phase5_filters_and_noise_veto.py.
 
 Usage:
-  python pipeline/phase7_reviewer_purity_exclusion.py --manifest <path> --out <dir> [--final-file cohort_chrom_features_final.tsv] [--qc-file <path>] [--result-suffix .qc_adjusted]
+  python pipeline/phase6_sample_qc.py --manifest <path> --out <dir> [--final-file cohort_chrom_features_final.tsv] [--qc-file <path>] [--result-suffix .qc_adjusted]
 """
 import argparse
 import os
@@ -19,7 +19,7 @@ def main():
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--final-file", default="cohort_chrom_features_final.tsv",
-                    help="filename (within <out>/tables) of the loss-segment-filtered output to QC-adjust")
+                    help="filename (within <out>/tables) of the phase-5 output to QC-adjust")
     ap.add_argument("--qc-file", default=None,
                     help="optional TSV with a SAMPLE_ID column of hand-curated manual QC exclusions")
     ap.add_argument("--result-suffix", default=".qc_adjusted")
