@@ -1258,6 +1258,10 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     `compute_second_look_confidence`'s output (SAMPLE_ID, chrom,
     cp_osc_confidence_v7), merged the same way; omit to fall back to plain
     v6-style confidence (no second look).
+
+    `noise_max=None` nominates without the noise veto; the pipeline then applies
+    `apply_noise_veto` as its last chromosome-level step. Because every step acts
+    on each chromosome independently, this gives the same calls as vetoing here.
     """
     required = [
         noise_col, probe_conf_col, chain_col,
@@ -1319,7 +1323,8 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
 
     d["nominated_score_v7"] = d["ctx_suppress_v7"] >= threshold
     d["min_osc_chain_pass_v7"] = chain >= min_osc_chain
-    d["noise_veto_v7"] = noise.notna() & (noise > noise_max)
+    # noise_max=None defers the noise veto to apply_noise_veto, the last step of the pipeline
+    d["noise_veto_v7"] = (noise.notna() & (noise > noise_max)) if noise_max is not None else False
     d["weak_altered_footprint_v7"] = (union < footprint_union_min) & (islands <= footprint_island_max)
 
     nominated_main = (
@@ -1330,8 +1335,8 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     )
 
     # ---- parallel loss-dominant-baseline pathway ----
-    # shard_df hits already carry their own noise/deficit/footprint logic
-    # (see compute_baseline_shard_features); still gate on the SAME noise
+    # shard_df hits already carry their own deficit/footprint logic
+    # (see compute_baseline_shard_features); they are gated by the SAME noise
     # ceiling as the main pathway, which rejects calls from noisy libraries.
     sd = shard_df[[sample_col, chrom_col, "loss_dominant_shard_hit"]].copy()
     sd[chrom_col] = sd[chrom_col].astype(str)
@@ -1351,132 +1356,6 @@ def apply_classifier_v7(cohort_df, purity_map, shard_df, *, second_look_df=None,
     d["v7_allelic_alt_lo"] = allelic_alt_lo
     d["v7_allelic_alt_hi"] = allelic_alt_hi
     d["v7_allelic_alt_frac_loh_max"] = allelic_alt_frac_loh_max
-
-    return d
-
-
-def _break_and_recompute_chain(seg_chrom, tcn_col="tcn.em", chain_k=3, cfem_threshold=0.15):
-    """
-    v2 thin-chain mechanism (see `apply_thin_chain_filter` docstring for the
-    full v1-vs-v2 narrative). Rather than vetoing the whole chromosome for one
-    unreliable segment, treat any "spike" segment (state differs from BOTH
-    immediate neighbors) with `cf.em < cfem_threshold` as a BREAK in the
-    segment sequence -- excise it and prevent any chain from spanning across
-    the gap it leaves -- then recompute `longest_le_k_distinct_run` (k=chain_k)
-    independently on each surviving contiguous chunk and return the best
-    (longest) result. A chromosome with no qualifying break just returns its
-    ordinary chain length unchanged.
-
-    Returns an int (0 if every segment gets excised, which cannot happen in
-    practice since a spike by definition has non-spike neighbors on both
-    sides).
-    """
-    s = _ordered_segments(seg_chrom)
-    T = pd.to_numeric(s.get(tcn_col), errors="coerce")
-    valid = T.notna()
-    s = s.loc[valid].reset_index(drop=True)
-    T = T.loc[valid].reset_index(drop=True)
-    states = [int(round(t)) for t in T.tolist()]
-    if len(s) < 3:
-        return longest_le_k_distinct_run(states, chain_k)
-    cfems = s["cf.em"].to_numpy() if "cf.em" in s.columns else np.full(len(s), np.nan)
-
-    break_idx = set()
-    for i in range(1, len(states) - 1):
-        if states[i] != states[i - 1] and states[i] != states[i + 1] and pd.notna(cfems[i]) and cfems[i] < cfem_threshold:
-            break_idx.add(i)
-
-    if not break_idx:
-        return longest_le_k_distinct_run(states, chain_k)
-
-    chunks, cur = [], []
-    for i, st in enumerate(states):
-        if i in break_idx:
-            if cur:
-                chunks.append(cur)
-            cur = []
-        else:
-            cur.append(st)
-    if cur:
-        chunks.append(cur)
-    return max((longest_le_k_distinct_run(c, chain_k) for c in chunks), default=0)
-
-
-def apply_thin_chain_filter(cohort_df, man_df, tablesDir, *,
-                            min_chain=4,
-                            chain_k=3,
-                            cfem_threshold=0.15,
-                            nominated_col="nominated_v7",
-                            shard_col="loss_dominant_shard_hit",
-                            sample_col="SAMPLE_ID",
-                            chrom_col="chrom"):
-    """
-    Post-hoc reliability check on top of `apply_classifier_v7`'s `nominated_v7`
-    calls.
-
-    An oscillation chain can be carried by a single thin "spike" segment whose
-    FACETS cellular-fraction estimate (`cf.em`) is unreliable, sandwiched
-    between two ordinary segments. Segment size and het-SNP count (`nhet`) do
-    not separate these from real events, because chromothripsis legitimately
-    produces small, low-nhet segments; `cf.em` of the segments forming the
-    chain does.
-
-    Within the oscillation-chain window (`longest_le_k_distinct_run_bounds`),
-    each spike with cf.em below `cfem_threshold` is treated as a break
-    (`_break_and_recompute_chain`): it is excised, the longest surviving chain
-    is recomputed on each side, and the call is dropped only if the best
-    surviving chain is shorter than `min_chain` (default 4, matching
-    `apply_classifier_v7`'s `min_osc_chain`). A well-supported chain around one
-    unreliable segment is therefore kept, while a chromosome whose only
-    evidence is the weak segment is dropped.
-
-    Applies only to the oscillation (non-shard) pathway (`shard_col == False`);
-    shard-pathway calls are expected to contain small, thin segments and are
-    exempt.
-
-    Requires `man_df` to carry `facets_cncf_path` (reads segment tables via
-    `run_ctx_pipeline.load_cncf` -- the raw per-sample cncf file, not the
-    cached jointseg, so no R/Rscript dependency here).
-
-    Returns `cohort_df` with new columns: `thin_chain_best_chain` (the best
-    surviving chain length after breaking, equal to the original
-    `longest_osc_chain_k3` when no break applies), `thin_chain_veto`,
-    `nominated_v7_filtered`, `sample_flag_v7_filtered`, `thin_chain_min_chain`.
-    """
-    import run_ctx_pipeline as rp
-
-    d = cohort_df.copy()
-    d[chrom_col] = d[chrom_col].astype(str)
-    shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
-    nom = d[(d[nominated_col] == True) & (~shard)]
-
-    rows = []
-    cache = {}
-    for sid in nom[sample_col].unique():
-        if sid not in cache:
-            try:
-                seg_df = rp.load_cncf(man_df, sid)
-                seg_df["_c"] = seg_df["chrom"].map(_norm_chrom)
-                cache[sid] = seg_df
-            except Exception:
-                cache[sid] = None
-        seg_df = cache[sid]
-        if seg_df is None:
-            continue
-        for ch in nom.loc[nom[sample_col] == sid, chrom_col].unique():
-            s = seg_df[seg_df["_c"] == _norm_chrom(ch)]
-            best_chain = _break_and_recompute_chain(s, chain_k=chain_k, cfem_threshold=cfem_threshold)
-            rows.append({sample_col: sid, chrom_col: ch, "thin_chain_best_chain": best_chain})
-
-    feat = pd.DataFrame(rows, columns=[sample_col, chrom_col, "thin_chain_best_chain"])
-    d = d.merge(feat, on=[sample_col, chrom_col], how="left")
-
-    d_shard = d[shard_col].fillna(False) if shard_col in d.columns else pd.Series(False, index=d.index)
-    veto = (~d_shard) & (d["thin_chain_best_chain"] < min_chain)
-    d["thin_chain_veto"] = veto.fillna(False)
-    d["nominated_v7_filtered"] = d[nominated_col] & (~d["thin_chain_veto"])
-    d["sample_flag_v7_filtered"] = d.groupby(sample_col)["nominated_v7_filtered"].transform("any")
-    d["thin_chain_min_chain"] = min_chain
 
     return d
 
@@ -1513,7 +1392,7 @@ def _n_loss_segments(seg_chrom, tcn_col="tcn.em", lcn_col="lcn.em"):
 
 def apply_loss_segment_filter(cohort_df, man_df, *,
                               min_loss_segments=3,
-                              nominated_col="nominated_v7_filtered",
+                              nominated_col="nominated_v7",
                               shard_col="loss_dominant_shard_hit",
                               frac_loh_col="frac_loh",
                               n_allelic_col="n_allelic_state_changes",
@@ -1522,8 +1401,7 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
                               sample_col="SAMPLE_ID",
                               chrom_col="chrom"):
     """
-    Second post-hoc filter, applied on top of `apply_thin_chain_filter`'s
-    output.
+    First oscillation-call filter, applied to `apply_classifier_v7`'s output.
 
     Oscillation calls with fewer than three loss blocks (see
     `_n_loss_segments`) typically reflect simple broad-arm losses rather than
@@ -1537,7 +1415,7 @@ def apply_loss_segment_filter(cohort_df, man_df, *,
     AND `n_allelic_state_changes >= v7_allelic_alt_lo`) -- a chromosome with
     real minor-allele complexity substituting for literal LOH (chromothripsis
     after genome doubling) is not penalized for having no loss segments.
-    Loss-dominant/shard-pathway calls are exempt, as in the thin-chain filter.
+    Loss-dominant/shard-pathway calls are exempt.
     The filter only removes calls; it does not add chromosomes that v7 did not
     nominate.
 
@@ -1637,7 +1515,7 @@ def apply_within_sample_contrast_filter(cohort_df, *, min_contrast_score=2.0,
                                         shard_col="loss_dominant_shard_hit",
                                         sample_col="SAMPLE_ID", chrom_col="chrom"):
     """
-    Third post-hoc filter, applied on top of `apply_loss_segment_filter`.
+    Second oscillation-call filter, applied on top of `apply_loss_segment_filter`.
 
     In samples with genome-wide copy-number jitter, oscillation features can be elevated on
     every chromosome. A call is therefore kept only if the chromosome stands out from the
@@ -1662,6 +1540,74 @@ def apply_within_sample_contrast_filter(cohort_df, *, min_contrast_score=2.0,
     d["nominated_final"] = nominated & (~veto)
     d["sample_flag_final"] = d.groupby(sample_col)["nominated_final"].transform("any")
     d["contrast_min_score"] = min_contrast_score
+    return d
+
+
+def _median_cn_step(seg_chrom, tcn_col="tcn.em"):
+    """Median nonzero |total copy-number difference| between adjacent segments of one
+    chromosome (0 when the chromosome has no copy-number change)."""
+    t = pd.to_numeric(_ordered_segments(seg_chrom)[tcn_col], errors="coerce").dropna().to_numpy(dtype=float)
+    steps = np.abs(np.diff(t))
+    steps = steps[steps > 0]
+    return float(np.median(steps)) if len(steps) else 0.0
+
+
+def apply_noise_veto(cohort_df, man_df, *, noise_max=1.0,
+                     step_to_noise_min=3.0,
+                     exception_contrast_min=1.5,
+                     noise_col="dot_mad_within",
+                     nominated_col="nominated_final",
+                     sample_col="SAMPLE_ID", chrom_col="chrom"):
+    """
+    Probe-level noise veto, the last chromosome-level step (both pathways).
+
+    A call is removed when the chromosome's within-segment probe noise (`noise_col`,
+    absolute copy-number units) exceeds `noise_max`, unless the copy-number changes are
+    large relative to that noise and the chromosome stands out from the rest of the sample:
+        median nonzero |tcn.em difference| between adjacent segments / noise >= step_to_noise_min
+        AND contrast_score >= exception_contrast_min.
+    The exception keeps high-amplitude events in samples with genome-wide probe noise; the
+    contrast condition rejects samples in which every chromosome shows large jumps.
+    `step_to_noise_min=None` disables the exception (plain noise veto). Requires
+    `contrast_score` (see `apply_within_sample_contrast_filter`) and `man_df` with
+    `facets_cncf_path`.
+
+    Returns `cohort_df` with new columns `cn_step_median`, `step_to_noise`, `noise_veto`,
+    `noise_veto_exception`, `noise_max`, `step_to_noise_min`, `exception_contrast_min`, and
+    `nominated_final` / `sample_flag_final` updated.
+    """
+    import run_ctx_pipeline as rp
+
+    d = cohort_df.copy()
+    d[chrom_col] = d[chrom_col].astype(str)
+    noise = pd.to_numeric(d[noise_col], errors="coerce")
+    nominated = d[nominated_col].fillna(False).astype(bool)
+    noisy = nominated & noise.notna() & (noise > noise_max)
+
+    d["cn_step_median"] = np.nan
+    if step_to_noise_min is not None:
+        for sid in d.loc[noisy, sample_col].unique():
+            try:
+                seg_df = rp.load_cncf(man_df, sid)
+            except Exception:
+                continue
+            seg_df["_c"] = seg_df["chrom"].map(_norm_chrom)
+            for i in d.index[noisy & (d[sample_col] == sid)]:
+                s = seg_df[seg_df["_c"] == _norm_chrom(d.at[i, chrom_col])]
+                d.at[i, "cn_step_median"] = _median_cn_step(s)
+    d["step_to_noise"] = d["cn_step_median"] / noise
+    if step_to_noise_min is not None:
+        exception = noisy & (d["step_to_noise"] >= step_to_noise_min) & \
+            (pd.to_numeric(d["contrast_score"], errors="coerce") >= exception_contrast_min)
+    else:
+        exception = pd.Series(False, index=d.index)
+    d["noise_veto_exception"] = exception
+    d["noise_veto"] = noisy & ~exception
+    d["nominated_final"] = nominated & ~d["noise_veto"]
+    d["sample_flag_final"] = d.groupby(sample_col)["nominated_final"].transform("any")
+    d["noise_max"] = noise_max
+    d["step_to_noise_min"] = step_to_noise_min
+    d["exception_contrast_min"] = exception_contrast_min
     return d
 
 

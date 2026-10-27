@@ -1,6 +1,6 @@
 """
 Phase 3 (any cohort): loss-dominant-baseline/shard features, gated second-look
-confidence, then the v7 classifier (fixed thresholds).
+confidence, then the v7 classifier (fixed thresholds). The noise veto is deferred to phase 5.
 
 Usage:
   python pipeline/phase3_v7_classify.py --manifest <path> --out <dir>
@@ -57,7 +57,8 @@ def main():
     second_look_df.to_csv(os.path.join(tables, "cohort_second_look_confidence.tsv"), sep="\t", index=False)
     print(f"Second-look confidence: {len(second_look_df)} candidate rows")
 
-    v7 = cf.apply_classifier_v7(v6, purity_map, shard_df, second_look_df=second_look_df)
+    v7 = cf.apply_classifier_v7(v6, purity_map, shard_df, second_look_df=second_look_df,
+                            noise_max=None)  # noise veto applied last (phase 5)
     v7.to_csv(os.path.join(tables, "cohort_chrom_features_v7.tsv"), sep="\t", index=False)
 
     print(f"v7 output: {len(v7)} rows, {v7['SAMPLE_ID'].nunique()} samples")
