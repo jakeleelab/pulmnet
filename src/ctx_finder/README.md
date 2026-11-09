@@ -11,13 +11,15 @@ positive if at least one chromosome remains called. It is designed for the spars
 profiles that FACETS produces from targeted gene panels (e.g. MSK-IMPACT), where whole-genome
 callers such as ShatterSeek are not applicable.
 
-Current version: **v1.0**.
+Current version: **v1.0.1**.
+
+To try it out, see the simulated [example data](example/), which run with a single command.
 
 ## Requirements
 
 - Python ≥ 3.10 with `numpy`, `pandas` and `ruptures` (changepoint detection).
-- R with the `facets` package and `Rscript` on `PATH`, only if probe-level tables must be extracted
-  from FACETS `.Rdata` files (they are cached after the first run).
+- R (`Rscript` on `PATH`), only if probe-level tables must be extracted from FACETS `.Rdata`
+  files (they are cached after the first run).
 - A Slurm cluster is recommended for the changepoint step; it can also be run sequentially.
 - Genome build: hg19 / GRCh37.
 
@@ -38,9 +40,12 @@ A tab-separated manifest with one row per sample:
 | Column | Description |
 |---|---|
 | `SAMPLE_ID` | unique sample identifier |
-| `facets_cncf_path` | path to the sample's FACETS segment file (`*.cncf.txt`); the matching `.Rdata` (probe-level data) is located next to it |
+| `facets_cncf_path` | path to the sample's FACETS segment file (`*.cncf.txt`) |
+| `facets_jointseg_path` | optional; path to the FACETS probe-level table (`out$jointseg` written as TSV, may be gzipped). If absent, the table is extracted from the `.Rdata` file next to the segment file (requires R) |
 | `purity`, `ploidy` | purity and ploidy of the FACETS fit |
 | `purity_source` | optional; calls are cleared in samples marked `reviewer_override` (purity set manually) |
+
+Relative paths are resolved from the manifest's folder.
 
 Optionally, a tab-separated file with a `SAMPLE_ID` column lists samples excluded on manual quality
 review (`--qc-file`); their calls are cleared as well.
@@ -262,9 +267,13 @@ re-extracting the probe tables in later runs.
 | `ctx_features.py` | parameters, chromosome features, candidates, filters and noise veto |
 | `ctx_changepoint.py`, `ctx_cp_parallel.py` | changepoint re-segmentation and its Slurm array |
 | `pipeline/01_prepare.py`, `pipeline/02_call.py` | command-line drivers |
+| `example/` | simulated example data and a script that runs them |
 
 ## Version history
 
+- **v1.0.1**: simulated example data; optional manifest column `facets_jointseg_path`
+  (probe-level tables without `.Rdata` files); relative manifest paths resolved from the
+  manifest's folder. Calls are unchanged.
 - **v1.0**: first public release.
 
 ## License

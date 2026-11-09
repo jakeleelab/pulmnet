@@ -56,6 +56,8 @@ def main():
         print(failed.head(20).to_string(index=False))
 
     ok = sorted(set(proc) - set(failed["SAMPLE_ID"]))
+    if not ok:
+        sys.exit("No sample could be processed; see the errors above.")
     with open(os.path.join(work, "changepoint_penalty.txt"), "w") as fh:
         fh.write(f"{args.changepoint_penalty}\n")
     if args.run_changepoints_here:

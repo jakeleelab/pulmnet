@@ -9,4 +9,4 @@ Citation: to be updated
 For the source code and tutorial for figure-related codes, see [figure_codes](src/figure_codes).
 
 ### Software and Tools
-For the source code and tutorial for `ctx_finder`, which is currently under development, see [ctx_finder](src/ctx_finder).
+`ctx_finder` detects chromothripsis from FACETS copy-number profiles of targeted sequencing panels such as MSK-IMPACT. For the source code, documentation and an example dataset, see [ctx_finder](src/ctx_finder).
