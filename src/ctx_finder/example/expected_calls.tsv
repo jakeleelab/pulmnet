@@ -1,0 +1,11 @@
+sample_id	chromothripsis	called_chromosomes	description
+EX01	True	3,11	chr3 (whole) and 11q chromothripsis; CCND1 amplification
+EX02	True	3,11	3p and chr11 (whole) chromothripsis; CCND1 amplification
+EX03	True	3,11	chr3 (whole) and 11q chromothripsis after whole-genome doubling; CCND1 amplification
+EX04	True	1	1p chromothripsis; MYCL amplification
+EX05	True	12	chromosome-wide chr12 loss with focal CDK4 and MDM2 amplifications
+EX06	False		arm-level changes only
+EX07	False		3p chromothripsis; purity set manually (cleared by sample QC)
+EX08	False		noisy library; arm-level changes only
+EX09	True	3,11	chr3 (whole) and 11q chromothripsis; no amplification
+EX10	True	1	1p chromothripsis; no amplification

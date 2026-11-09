@@ -1,0 +1,11 @@
+SAMPLE_ID	facets_cncf_path	facets_jointseg_path	purity	ploidy	purity_source
+EX01	data/EX01.cncf.txt	data/EX01.jointseg.tsv.gz	0.614	2.013	automated_fit
+EX02	data/EX02.cncf.txt	data/EX02.jointseg.tsv.gz	0.453	1.971	automated_fit
+EX03	data/EX03.cncf.txt	data/EX03.jointseg.tsv.gz	0.689	3.085	automated_fit
+EX04	data/EX04.cncf.txt	data/EX04.jointseg.tsv.gz	0.54	2.039	automated_fit
+EX05	data/EX05.cncf.txt	data/EX05.jointseg.tsv.gz	0.549	1.961	automated_fit
+EX06	data/EX06.cncf.txt	data/EX06.jointseg.tsv.gz	0.497	1.919	automated_fit
+EX07	data/EX07.cncf.txt	data/EX07.jointseg.tsv.gz	0.367	2.008	reviewer_override
+EX08	data/EX08.cncf.txt	data/EX08.jointseg.tsv.gz	0.393	3.051	automated_fit
+EX09	data/EX09.cncf.txt	data/EX09.jointseg.tsv.gz	0.501	1.961	automated_fit
+EX10	data/EX10.cncf.txt	data/EX10.jointseg.tsv.gz	0.644	1.987	automated_fit
