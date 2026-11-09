@@ -1,5 +1,10 @@
 # Chromothripsis Heuristic Screening Code
 
+> **No longer used.** `ctx_heuristic` was our initial computational heuristic for
+> nominating chromothripsis candidates. It has been fully replaced by
+> [`ctx_finder`](../ctx_finder), which is the method used in the manuscript. This
+> folder is kept for reference only and is not maintained.
+
 This repository contains `ctx_heuristic.R`, an R script used to perform an initial heuristic screen for potential chromothripsis cases from FACETS-derived copy-number segmentation data.
 
 ## Purpose
